@@ -1,0 +1,48 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="false" level="WARNING" enabled_by_default="false">
+      <option name="ignoredPackages">
+        <list>
+          <option value="pypdf2" />
+          <option value="docx2txt" />
+          <option value="jsonpath-ng" />
+          <option value="starlette" />
+          <option value="typing-extensions" />
+          <option value="langgraph-prebuilt" />
+          <option value="httpx" />
+          <option value="langchain" />
+          <option value="langchain-community" />
+          <option value="langchain-core" />
+          <option value="langchain-experimental" />
+          <option value="langchain-openai" />
+          <option value="langgraph" />
+          <option value="langgraph-checkpoint-postgres" />
+          <option value="fastapi" />
+          <option value="uvicorn" />
+          <option value="pydantic" />
+          <option value="pydantic-settings" />
+          <option value="requests" />
+          <option value="tiktoken" />
+          <option value="pymupdf" />
+          <option value="chromadb" />
+          <option value="python-multipart" />
+          <option value="pyjwt" />
+          <option value="redis" />
+          <option value="psycopg" />
+          <option value="sqlalchemy" />
+          <option value="anyio" />
+          <option value="datamodel-code-generator" />
+          <option value="unstructured" />
+          <option value="aiofiles" />
+          <option value="langchain-text-splitters" />
+          <option value="python-docx" />
+          <option value="fitz" />
+          <option value="command" />
+          <option value="torch" />
+          <option value="unstructured_inference" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
