@@ -1,0 +1,81 @@
+# src/ai_edms_assistant/interfaces/api/routes/document_routes.py
+"""
+Document query endpoints — thin HTTP layer over DocumentRepository.
+
+These endpoints are optional helpers for frontend direct calls.
+The AI agent accesses documents via DocumentRepository through its tools.
+"""
+
+from __future__ import annotations
+
+from uuid import UUID
+from fastapi import APIRouter, HTTPException, Query
+
+from ..dependencies import DocumentRepoDep
+from ..schemas.document_schema import DocumentBriefResponse
+from ai_edms_assistant.domain.value_objects.filters import DocumentFilter
+from ....domain.repositories.base import PageRequest
+
+router = APIRouter(prefix="/documents", tags=["documents"])
+
+
+@router.get(
+    "/{document_id}",
+    response_model=DocumentBriefResponse,
+    summary="Получить документ по ID",
+)
+async def get_document(
+    document_id: UUID,
+    token: str = Query(..., description="JWT токен пользователя"),
+    repo: DocumentRepoDep = None,
+) -> DocumentBriefResponse:
+    """Fetch a single document by UUID."""
+    doc = await repo.get_by_id(document_id, token)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+
+    return DocumentBriefResponse(
+        id=doc.id,
+        reg_number=doc.reg_number,
+        short_summary=doc.short_summary,
+        status=doc.status.value if doc.status else None,
+        create_date=doc.create_date,
+        author_name=doc.author.name if doc.author else None,
+    )
+
+
+@router.get("", summary="Поиск документов")
+async def search_documents(
+    token: str = Query(..., description="JWT токен пользователя"),
+    reg_number: str | None = Query(None, description="Регистрационный номер"),
+    short_summary: str | None = Query(None, description="Краткое содержание"),
+    page: int = Query(0, ge=0),
+    size: int = Query(20, ge=1, le=100),
+    repo: DocumentRepoDep = None,
+) -> dict:
+    """
+    Search documents with basic filters.
+
+    Exposes a subset of DocumentFilter — for advanced filtering the AI
+    agent uses DocumentRepository.search() directly via tools.
+    """
+    result = await repo.search(
+        DocumentFilter(reg_number=reg_number, short_summary=short_summary),
+        token,
+        PageRequest(page=page, size=size),
+    )
+    return {
+        "items": [
+            {
+                "id": str(d.id),
+                "regNumber": d.reg_number,
+                "shortSummary": d.short_summary,
+                "status": d.status.value if d.status else None,
+            }
+            for d in result.items
+        ],
+        "page": result.page,
+        "size": result.size,
+        "hasNext": result.has_next,
+        "total": result.total,
+    }

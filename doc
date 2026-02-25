@@ -1,0 +1,3589 @@
+/**
+ * DTO Модель для описания документа
+ */
+public class DocumentDto {
+
+    @Schema(description = "Идентификатор документа")
+    private UUID id;
+
+    private String organizationId;
+
+    private DocumentCategoryConstants docCategoryConstant;
+
+    @Schema(description = "Дата создания")
+    private Instant createDate;
+
+    @Schema(description = "Кол-во дней исполнения")
+    private Integer daysExecution;
+
+    private String profileName;
+
+    @Schema(description = "Список обязательных полей")
+    private List<RequiredField> requiredField;
+
+    @Schema(description = "Автор документа")
+    private UserInfoDto author;
+
+    private UserInfoDto responsibleExecutor;
+
+    private DocumentStatus status;
+    private DocumentUserColorDto color;
+
+    private DocumentStatus prevStatus;
+
+    @Schema(description = "Регистрационный номер документа")
+    private String regNumber;
+
+    @Schema(description = "Зарезервированный регистрационный номер документа")
+    private String reservedRegNumber;
+
+    @Schema(description = "Дата резервирования регистрационного номера документа")
+    private Instant reservedRegDate;
+
+    @Schema(description = "Дата регистрации документа")
+    private Instant regDate;
+
+    @Schema(description = "Признак документа с грифом ДСП. По умолчанию признак снят.")
+    private Boolean dspFlag;
+
+    @Schema(description = "Кол-во страниц документа")
+    private Long pages;
+
+    @Schema(description = "Номер экземпляра")
+    private Integer exemplarNumber;
+
+    @Schema(description = "Краткое содержание, может выбираться из справочника кратких содержаний")
+    private String shortSummary;
+
+    @Schema(description = "Текст документа")
+    private String summary;
+
+    @Schema(description = "Наименование корреспондента")
+    private String correspondentName;
+
+    @Schema(description = "Есть ли в документе адресаты")
+    private Boolean recipients;
+
+    @Schema(description = "Идентификатор профиля документа")
+    private UUID profileId;
+
+    @Schema(description = "Идентификатор версии документа")
+    private UUID documentVersionId;
+
+    @Schema(description = "Признак стоит ли документ на контроле")
+    private Boolean controlFlag;
+
+    @Schema(description = "Метка снятия с контроля")
+    private Boolean removeControl;
+
+    @Schema(description = "Идентификатор журнала регистрации")
+    private UUID journalId;
+
+    @Schema(description = "Вид документа")
+    private DocumentTypeDto documentType;
+
+    @Schema(description = "Идентификатор вида документа")
+    private Long documentTypeId;
+
+    private UUID refDocId;
+    private String refDocOrgId;
+
+    private Boolean versionFlag;
+
+    @Schema(description = "Формула рег. номера")
+    private List<String> formula;
+
+    @Schema(description = "Список поручений")
+    private List<TaskDto> taskList;
+
+    @Schema(description = "Способ получения документа")
+    private DeliveryMethodDto deliveryMethod;
+    private Long deliveryMethodId;
+
+    @Schema(description = "Идентификатор корреспондент")
+    private UUID correspondentId;
+
+    @Schema(description = "Исходящий регистрационный номер")
+    private String outRegNumber;
+
+    @Schema(description = "Исходящая дата регистрации документа")
+    private Instant outRegDate;
+
+    @Schema(description = "Кол-во листов приложений к документу")
+    private String additionalPages;
+
+    @Schema(description = "Кол-во экземлпяров документа")
+    private Long exemplarCount;
+
+    @Schema(description = "Ид инвест программы")
+    private UUID investProgramId;
+
+    @Schema(description = "Инвест программа")
+    private InvestmentProgramDto investmentProgram;
+
+    /** Получен в ответ на */
+    @Schema(description = "Идентификатор документа который получен в ответ на другой документ")
+    private UUID receivedDocId;
+
+    /** Создан в ответ на */
+    @Schema(description = "Идентификатор документа создан в ответ на другой документ")
+    private UUID answerDocId;
+
+    @Schema(description = "Документ который получен в ответ на другой документ")
+    private DocumentDto receivedAsAnswerByDoc;
+
+    @Schema(description = "Документ который создан в ответ на другой документ")
+    private DocumentDto createAsAnswerByDoc;
+
+    @Schema(description = "Версия документа")
+    private DocumentVersionDto version;
+
+    @Schema(description = "Процесс документа")
+    private DocumentProcessDto process;
+
+    private UUID processId;
+
+    @Schema(description = "Список вложений к документу")
+    private List<AttachmentDocumentDto> attachmentDocument;
+
+    @Schema(description = "Корреспондент")
+    private DocumentRecipientDto correspondent;
+
+    @Schema(description = "Список адресатов")
+    private List<DocumentRecipientDto> recipientList;
+
+    @Schema(description = "Контроль")
+    private ControlDto control;
+    private DocumentCreateType createType;
+
+    @Schema(description = "Дата проведения совещания")
+    private Instant dateMeeting;
+
+    @Schema(description = "Дата проведения заседания")
+    private Instant dateMeetingQuestion;
+
+    @Schema(description = "Время начала совещания")
+    private Instant startMeeting;
+
+    @Schema(description = "Время начала совещания")
+    private Instant endMeeting;
+
+    @Schema(description = "Место проведения совещания")
+    private String placeMeeting;
+
+    @Schema(description = "Председатель")
+    private UserInfoDto chairperson;
+
+    @Schema(description = "Секретарь")
+    private UserInfoDto secretary;
+
+    @Schema(description = "Внешние приглашенные")
+    private String externalInvitees;
+
+    @Schema(description = "Количество внутренних приглашенных")
+    private Integer inviteesCount;
+
+    @Schema(description = "Признак дополнения к повестке вопросов")
+    private Boolean addition = false;
+
+    @Schema(description = "Идентификатор документа дополнительного заседания по вопросам")
+    private UUID additionMeetingQuestionId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации документа дополнительного заседания по вопросам")
+    private String additionMeetingQuestionOrgId;
+
+    @Schema(description = "Документ дополнительного заседания по вопросам")
+    private DocumentDto additionMeetingQuestion;
+
+    @Schema(description = "Форма проведения заседания")
+    private FormMeetingQuestionType formMeetingType;
+
+    @Schema(description = "Содержит информацию о порядковом номере вопроса в повестке дня")
+    private Integer numberQuestion;
+
+    @Schema(description = "Список вопросов")
+    private List<DocumentQuestionDto> documentQuestions;
+
+    @Schema(description = "Отметка о наличии вопросов в повестке")
+    private Boolean hasQuestion;
+
+    @Schema(description = "Идентификатор документа заседание по вопросам")
+    private UUID documentMeetingQuestionId;
+
+    @Schema(description = "Идентификатор организации документа заседание по вопросам")
+    private String documentMeetingQuestionOrgId;
+
+    @Schema(description = "Документ заседание по вопросам")
+    private DocumentDto documentMeetingQuestion;
+
+    @Schema(description = "Лист 'Кто подписал'")
+    private List<MiniUserInfoDto> whoAddressed;
+
+    private Integer writeOffAffairCount = 0;
+
+    /**
+     * Кол-во пред добавленных дел в документ
+     */
+    private Integer preAffairCount = 0;
+
+    private String inDocSigners;
+    private String countryName;
+    private UUID countryId;
+
+    private List<IntroductionDto> introduction;
+    private Integer introductionCount;
+    private Integer introductionCompleteCount;
+
+    private AutoControl autoControl;
+
+    private Boolean skipRegistration = Boolean.FALSE;
+
+    /* Поля для обращений */
+    private DocumentAppealDto documentAppeal;
+
+    @Schema(description = "Список ответственных за подготовку материалов")
+    private List<DocumentResponsibleExecutorDto> responsibleExecutors;
+
+    @Schema(description = "Присутствие ответственных за подготовку материалов")
+    private Boolean hasResponsibleExecutor;
+
+    @Schema(description = "количество ответственных за подготовку материалов")
+    private Integer responsibleExecutorsCount;
+
+    @Schema(description = "Кол-во связей документа")
+    private Integer documentLinksCount;
+
+    @Schema(description = "Дата проведения заседания для документа по вопросу")
+    private Instant dateQuestion;
+
+    @Schema(description = "Комментарии для руководителя")
+    private String commentQuestion;
+
+    private UserInfoDto initiator;
+
+    @Schema(description = "Список предварительных номенклатур")
+    private List<DocumentPreNomenclatureDto> preNomenclatureAffairs;
+
+    private RegistrationJournalDto registrationJournal;
+
+    @Schema(description = "Кем подписан (для внутреннего и исходя-щего документа)")
+    private UserInfoDto whoSigned;
+
+    /**
+     * Кол-во сотрудников для оповещения в повестке заседания
+     */
+    private Integer meetingQuestionNotifyCount;
+    private DocumentUserPropsDto userProps;
+
+    private String note;
+
+    @Schema(description = "Включение грифа доступа")
+    private Boolean enableAccessGrief = Boolean.FALSE;
+
+    @Schema(description = "Идентификатор грифа доступа")
+    private UUID accessGriefId;
+
+    @Schema(description = "Гриф доступа")
+    private AccessGriefDto accessGrief;
+
+    private Boolean autoRouting;
+    private BigDecimal contractSum;
+    private Instant contractDurationStart;
+
+    private CurrencyDto currency;
+    private UUID currencyId;
+    private Instant contractSigningDate;
+    private Instant contractStartDate;
+    private Instant contractDurationEnd;
+    private Boolean contractAgreement;
+    private Boolean contractAutoProlongation;
+    private Boolean contractTypical;
+    private String contractNumber;
+    private Instant contractDate;
+    private Integer countTask = 0;
+    private Integer taskProjectCount = 0;
+    private Integer completedTaskCount = 0;
+    private DocumentInventoryDataDto documentInventoryData;
+    private String currentBpmnTaskName;
+
+    private DocumentFormDefinitionDto documentFormDefinition;
+
+    @Schema(description = "Пользовательские поля документа")
+    private Map<String, Object> customFields;
+
+    private List<AdditionalDocumentDto> additionalDocuments;
+
+    private UUID documentFormId;
+
+    @Schema(description = "Номер журнала регистрации при регистрации документа")
+    private Long journalNumber;
+
+    public DocumentDto() {
+    }
+
+/**
+ * Констатнты типов документов, которые используются в коде для обработки. Используются в справочнике <i>Типов документов</i>,
+ * <i>Шаблонов печатных форм</i>. <br>
+ * Соответствует ENUM <b>document_category_constants</b> в БД. Данный ENUM используется в таблице <b>document_category</b>.
+ */
+public enum DocumentCategoryConstants {
+
+    /**
+     * внутрений
+     */
+    INTERN("Внутренний документ", eu.iba.edms.report.common.DocumentCategoryConstants.INTERN),
+
+    /**
+     * входящий
+     */
+    INCOMING("Входящий документ", eu.iba.edms.report.common.DocumentCategoryConstants.INCOMING),
+
+    /**
+     * исходящий
+     */
+    OUTGOING("Исходящий документ", eu.iba.edms.report.common.DocumentCategoryConstants.OUTGOING),
+
+    /**
+     * совещание
+     */
+    MEETING("Совещание", eu.iba.edms.report.common.DocumentCategoryConstants.MEETING),
+
+    /**
+     * вопрос повестки
+     */
+    QUESTION("Вопрос повестки", eu.iba.edms.report.common.DocumentCategoryConstants.QUESTION),
+
+    /**
+     * заседание по вопросам
+     */
+    MEETING_QUESTION("Повестка заседания", eu.iba.edms.report.common.DocumentCategoryConstants.MEETING_QUESTION),
+
+    /**
+     * Обращения
+     */
+    APPEAL("Обращение", eu.iba.edms.report.common.DocumentCategoryConstants.APPEAL),
+
+    /**
+     * Договор
+     */
+    CONTRACT("Договор",eu.iba.edms.report.common.DocumentCategoryConstants.CONTRACT),
+
+    CUSTOM("Пользовательский документ", eu.iba.edms.report.common.DocumentCategoryConstants.CUSTOM);
+
+    private final String docCategoryConstant;
+    private final eu.iba.edms.report.common.DocumentCategoryConstants reportCategoryConstant;
+
+    DocumentCategoryConstants(String docCategoryConstant, eu.iba.edms.report.common.DocumentCategoryConstants reportCategoryConstant) {
+        this.docCategoryConstant = docCategoryConstant;
+        this.reportCategoryConstant = reportCategoryConstant;
+    }
+
+public enum RequiredField {
+
+    /** файл(ы) вложения */
+    ATTACHMENT,
+
+    /** исх.№ организации-корреспондента */
+    OUT_CORRESPONDENT_ORG_NUM,
+
+    /** дата документа организации-корреспондента */
+    OUT_CORRESPONDENT_ORG_DATE,
+
+    /** наименование организации-корреспондента */
+    OUT_CORRESPONDENT_NAME,
+
+    /** кем подписан */
+    DOC_SIGNERS,
+
+    /** наименование адресата */
+    RECIPIENT_NAME,
+
+    /** предвыбранные дела */
+    AFFAIRS,
+
+    /** контрагенты в договорах*/
+    CONTRACT_CORRESPONDENT;
+
+}
+
+/**
+ * Внедряемая DTO сущность, которая хранит информацию о работнкике который создал: документ, поручение, контроль, ознакомление.<br>
+ * Если документ получен от другой организации средствами системы и документ создан автоматически,<br>
+ * то вносится текст <b>"АИС МВ"</b>.
+ * Автор является отдельной сущностью для того, что бы при смене фамилии или департамента или других реквизитов,
+ * в документах данные об авторе оставались не изменными.
+ */
+public class UserInfoDto implements NamedUser, Serializable {
+
+    private static final long serialVersionUID = -1L;
+
+    @Schema(description = "Имя сотрудника")
+    private String firstName;
+
+    @Schema(description = "Фамилия сотрудника")
+    private String lastName;
+
+    @Schema(description = "Отчество сотрудника")
+    private String middleName;
+
+    @Schema(description = "Наименование должность сотрудника")
+    private String authorPost;
+
+    @Schema(description = "Наименование департамента сотрудника")
+    private String authorDepartmentName;
+
+    @Schema(description = "Департамент сотрудника")
+    private DepartmentDto authorDepartment;
+
+    @Schema(description = "Идентификатор департамента сотрудника")
+    private UUID authorDepartmentId;
+
+    @JsonIgnore
+    private String authorDepartmentOrgId;
+
+    @Schema(description = "Сотрудник")
+    private EmployeeDto employee;
+
+    @Schema(description = "Идентификатор сотрудник")
+    private UUID employeeId;
+
+    @JsonIgnore
+    private String employeeOrgId;
+
+    public UserInfoDto() {
+    }
+
+    public UserInfoDto(String firstName, String lastName, String middleName, String authorPost,
+                       String authorDepartmentName, DepartmentDto authorDepartment, UUID authorDepartmentId,
+                       String authorDepartmentOrgId, EmployeeDto employee, UUID employeeId, String employeeOrgId) {
+        this.firstName = firstName;
+        this.lastName = lastName;
+        this.middleName = middleName;
+        this.authorPost = authorPost;
+        this.authorDepartmentName = authorDepartmentName;
+        this.authorDepartment = authorDepartment;
+        this.authorDepartmentId = authorDepartmentId;
+        this.authorDepartmentOrgId = authorDepartmentOrgId;
+        this.employee = employee;
+        this.employeeId = employeeId;
+        this.employeeOrgId = employeeOrgId;
+    }
+
+/**
+ * DTO Модель для описания департамента
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class DepartmentDto implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @NotNull(groups = {ChangeDepartment.class})
+    @Schema(description = "Идентификатор департамента/подразделения")
+    private UUID id;
+
+    @JsonIgnore
+    private String organizationId;
+
+    @JsonIgnore
+    private String externalId;
+
+    @NotNull(groups = {CreateDepartment.class, ChangeDepartment.class})
+    @Schema(description = "Наименование департамента/подразделения")
+    private String name;
+
+    @Schema(description = "Номер департамента/подразделения в номенклатуре дел")
+    private String number;
+
+    @Schema(description = "Идентификатор родительского департамента/подразделения")
+    private UUID parentDepartmentId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации родительского департамента/подразделения")
+    private String parentDepartmentOrgId;
+
+    @Schema(description = "Родительский департамент/подразделение")
+    private DepartmentDto parentDepartment;
+
+    @Schema(description = "Номер по классификатору")
+    private String rank;
+
+    @Schema(description = "Код департамента/подразделения")
+    private String departmentCode;
+
+    @Schema(description = "Телефон")
+    private String phone;
+
+    @Schema(description = "Email")
+    private String email;
+
+    @Schema(description = "Адрес")
+    private String address;
+
+    @Schema(description = "Площадка")
+    private String room;
+
+    @Schema(description = "Идентификатор руководителя департамента/подразделения")
+    private UUID leaderId;
+
+    @Schema(description = "Руководитель департамента/подразделения")
+    private EmployeeDto leader;
+
+    @JsonIgnore
+    private String leaderOrgId;
+
+    @Schema(description = "Список сотрудников департамента/подразделения, поле игнорируется при обновлении записи")
+    private List<EmployeeDto> employees;
+
+    @Schema(description = "Список заместителей руководителя департамента/подразделения")
+    private List<DeputyLeaderDepartmentDto> deputyLeaders;
+
+    @Schema(description = "Список ответственных по номенклатуре")
+    private List<DepartmentEmployeeNomenclatureDto> employeeNomenclatures;
+
+    private Instant createDate;
+    private transient Boolean currentUserLeader;
+
+    @Schema(description = "Порядок сортировки")
+    private Integer order = 0;
+
+    public static interface CreateDepartment {
+    }
+
+    public static interface ChangeDepartment {
+    }
+
+    public DepartmentDto() {
+    }
+
+public class DeputyLeaderDepartmentDto {
+
+    private UUID id;
+    @JsonIgnore
+    private String organizationId;
+    private UUID departmentId;
+    @JsonIgnore
+    private String departmentOrgId;
+    private DepartmentDto department;
+    private UUID employeeId;
+    @JsonIgnore
+    private String employeeOrgId;
+    private EmployeeDto employee;
+
+    public DeputyLeaderDepartmentDto() {
+    }
+
+public class DepartmentEmployeeNomenclatureDto {
+
+    private UUID id;
+
+    private UUID departmentId;
+
+    @JsonIgnore
+    private String departmentOrgId;
+
+    private DepartmentDto department;
+
+    private UUID employeeId;
+
+    private EmployeeDto employee;
+
+    public DepartmentEmployeeNomenclatureDto() {
+    }
+
+/**
+ * DTO Модель для описания сотрудника
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class EmployeeDto implements Serializable, NamedUser {
+
+    private static final long serialVersionUID = 1L;
+
+    @Schema(description = "Идентификатор сотрудника")
+    private UUID id;
+    @Schema(description = "Идентификатор аккаунта сотрудника")
+    private String uId;
+    @JsonIgnore
+    private String externalId;
+    @Schema(description = "Персональный номер сотрудника")
+    private String personalNumber;
+    @Schema(description = "Имя сотрудника")
+    private String firstName;
+    @Schema(description = "Фамилия сотрудника")
+    private String lastName;
+    @Schema(description = "Отчество сотрудника")
+    private String middleName;
+    @Schema(description = "Признак уволен ли сотрудник")
+    private Boolean fired;
+    @Schema(description = "Признак активен ли сотрудник")
+    private Boolean active;
+    private transient String organizationId;
+    @Schema(description = "ФИО сотрудника")
+    private String fullPostName;
+    @Schema(description = "Идентификатор должности")
+    private Long postId;
+    @Schema(description = "Должность сотрудника")
+    private PostDto post;
+    @JsonIgnore
+    private String departmentOrgId;
+    @Schema(description = "Идентификатор департамента в котором работает сотрудник")
+    private UUID departmentId;
+    @Schema(description = "Департамент сотрудника")
+    private DepartmentDto department;
+    @Schema(description = "Организация сотрудника")
+    private OrgDto org;
+
+    @Schema(description = "Адрес")
+    private String address;
+    @Schema(description = "Площадка")
+    private String place;
+    @Schema(description = "URL")
+    private String url;
+    @Schema(description = "E-mail")
+    private String email;
+    @Schema(description = "Телефон")
+    private String phone;
+    @Schema(description = "LDAP Имя")
+    private String ldapName;
+
+    @Schema(description = "Я вляется ИО")
+    private Boolean io;
+    @Schema(description = "Присутствуют ИО")
+    private Boolean haveIo;
+    @Schema(description = "Уведомлять ли сотрудника сообщениями на почту")
+    private Boolean notify;
+    private Instant createDate;
+    @Schema(description = "Дата последней ручной загрузки аватара")
+    private Instant lastManualAvatarUploadDate;
+    private EmployeeCreateType createType;
+    private String sid;
+    private Boolean currentUserLeader;
+    private List<EmployeeServiceImpl.EmployeeBlockField> blockedFields;
+    @Schema(description = "Порядок сортировки")
+    private Integer order = 0;
+
+    public EmployeeDto() {
+    }
+
+/**
+ * DTO Модель для описания организации
+ */
+public class OrgDto implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @Schema(description = "Идентификатор организации")
+    private String id;
+
+    @Schema(description = "Наименование организации")
+    private String name;
+
+    @Schema(description = "Текущее кол-во активных учетных записей в СЭД")
+    private Integer currentCount;
+
+    @Schema(description = "Максимально кол-во активных учетных записей")
+    private Integer maxCount;
+
+    @Schema(description = "Признак активена ли организация")
+    private Boolean active;
+
+    @Schema(description = "Список сотрудников организации")
+    private List<EmployeeDto> employees;
+
+    public OrgDto() {
+    }
+
+public enum EmployeeCreateType {
+
+    MANUAL,
+    LDAP;
+
+}
+
+@Schema(description = "Перечисление для описания статусов документов")
+public enum DocumentStatus {
+
+    /**
+     * Черновик
+     */
+    DRAFT("Черновик"),
+
+    /**
+     * Новый
+     */
+    NEW("Новый"),
+
+    /**
+     * Утверждение
+     */
+    STATEMENT("На утверждении"),
+
+    /**
+     * Утвержден
+     */
+    APPROVED("Утвержден"),
+
+    /**
+     * Подписание
+     */
+    SIGNING("На подписании"),
+
+    /**
+     * Подписан
+     */
+    SIGNED("Подписан"),
+
+    /**
+     * Согласование
+     */
+    AGREEMENT("На согласовании"),
+
+    /**
+     * Согласован
+     */
+    AGREED("Согласован"),
+
+    /*INTERNAL_AGREEMENT("На согласовании (Внеш.)"),
+    INTERNAL_AGREEMENT_SENT("На согласовании (Внеш.) - Отправлен"),
+    INTERNAL_AGREED("Согласован (Внеш.)"),*/
+
+    /**
+     * Рассмотрение
+     */
+    REVIEW("На рассмотрении"),
+
+    /**
+     * Расммотрен
+     */
+    REVIEWED("Рассмотрен"),
+
+    /**
+     * Регистрация
+     */
+    REGISTRATION("На регистрации"),
+
+    /**
+     * Зарегистрирован
+     */
+    REGISTERED("Зарегистрирован"),
+
+    /**
+     * Исполнение
+     */
+    EXECUTION("На исполнении"),
+
+    /**
+     * Исполнен
+     */
+    EXECUTED("Исполнен"),
+
+    /**
+     * Отправка
+     */
+    DISPATCH("На отправке"),
+
+    /**
+     * Отправлен
+     */
+    SENT("Отправлен"),
+
+    /**
+     * Отклонен
+     */
+    REJECT("Отклонен"),
+
+    /**
+     * Ануллирован
+     */
+    CANCEL("Аннулирован"),
+
+    /**
+     * Подготовка
+     */
+    PREPARATION("Подготовка"),
+
+    /**
+     * Оформление
+     */
+    PAPERWORK("На оформлении"),
+
+    /**
+     * Оформлен
+     */
+    FORMALIZED("Оформлен"),
+
+    /**
+     * Одобрение
+     */
+    ACCEPTANCE("На одобрении"),
+
+    /**
+     * Одобрен
+     */
+    ACCEPTED("Одобрен"),
+
+    /**
+     * Договор исполнение
+     */
+    CONTRACT_EXECUTION("Исполнение договора"),
+
+    /**
+     * Договор исполненен
+     */
+    CONTRACT_CLOSED("Закрыт"),
+
+    /**
+     * Архив
+     */
+    ARCHIVE("ARCHIVE"),
+
+    /**
+     * Удален
+     */
+    DELETED("DELETED"),
+
+    /**
+     * Все
+     */
+    ALL("Все");
+
+    private String status;
+
+    DocumentStatus(String status) {
+        this.status = status;
+    }
+
+
+public class DocumentUserColorDto {
+
+    private UUID id;
+    private UUID documentId;
+    private String documentOrgId;
+    private String color;
+
+    public UUID getDocumentId() {
+        return documentId;
+    }
+
+/**
+ * DTO Модель для хранения видов документов, таких как: письмо, приказ, докладная записка...
+ */
+public class DocumentTypeDto {
+
+    @Schema(description = "Идентификатор вида документа")
+    private Long id;
+    @Schema(description = "Наименование вида документа")
+    private String typeName;
+    private DocumentCategoryConstants docCategoryConst;
+    @Schema(description = "Признак активен ли вид документа")
+    private Boolean active;
+    @Schema(description = "вид по таблицы 2 окб (https://minjust.gov.by/upload/iblock/d97/OKRB.pdf)")
+    @Size(max = 3, min = 3)
+    private String objectType;
+    private Instant createDate;
+
+    public DocumentTypeDto() {
+    }
+
+/**
+ * DTO Модель для описания поручения.
+ */
+public class TaskDto {
+
+    @Schema(description = "Идентификатор поручения")
+    private UUID id;
+    private String externalId;
+
+    @Schema(description = "Тип поручения")
+    private TaskType type;
+    private String organizationId;
+
+    @Schema(description = "Идентификатор родительского поручения")
+    private UUID parentId;
+
+    @JsonIgnore
+    private String parentOrg;
+
+    private Instant documentRegDate;
+
+    @Schema(description = "Номер поручения")
+    private String taskNumber;
+
+    @Schema(description = "Дата создания поручения")
+    private Instant createDate;
+
+    private TaskStatus taskStatus;
+
+    @Schema(description = "Автор поручения")
+    private UserInfoDto author;
+
+    @Schema(description = "Список исполнителей поручения")
+    private List<TaskExecutorsDto> taskExecutors;
+
+    @Schema(description = "Запланированная дата окончания поручения")
+    private Instant planedDateEnd;
+
+    @Schema(description = "Реальная дата окончания поручения")
+    private Instant realDateEnd;
+
+    @Schema(description = "Список изменений переносов даты исполнения")
+    private List<TaskChangeDateRequestDto> taskChangeDateRequests;
+
+    @Schema(description = "Текст поручения")
+    private String taskText;
+
+    @Schema(description = "Признак стоит ли поручение на контроле")
+    private Boolean onControl;
+
+    @Schema(description = "Метка снятия с контроля")
+    private Boolean removeControl = false;
+
+    @Schema(description = "Контроль поручения")
+    private ControlDto control;
+
+    @Schema(description = "Идентификатор документа")
+    private UUID documentId;
+
+    @JsonIgnore
+    private String documentOrgId;
+
+    @Schema(description = "Документ")
+    private DocumentDto document;
+
+    @Schema(description = "Признак стоит ли поручение на доработке")
+    private Boolean revision;
+
+    @Schema(description = "Количество исполнителей")
+    private Integer countExec;
+
+    @Schema(description = "Рег номер документа")
+    private String documentRegNum;
+
+    private String periodTaskParentNumber;
+    private String parentTaskNumber;
+
+    @Schema(description = "Количество исполнителей которые исполнели")
+    private Integer countCompletedExec;
+    private Integer dateRequestCount;
+    private Integer executedDateRequestCount;
+    @Schema(description = "Бес срока исполнения")
+    private Boolean endless;
+    private Boolean periodTask = Boolean.FALSE;
+    private Integer periodTaskCount;
+    private PeriodTaskInterval period;
+    private UUID periodTaskParentId;
+    private String periodTaskParentOrgId;
+    private Instant firstExecution;
+
+
+    public TaskDto() {
+    }
+
+public enum TaskType {
+
+    /** К сведению */
+    INFORMATION,
+
+    /** Обычное поручение */
+    GENERAL;
+
+}
+
+/**
+ * Перечисления для описания статусов поручения
+ */
+public enum TaskStatus {
+
+    ON_EXECUTION("ON_EXECUTION"),           //На исполнении
+    EXECUTED("EXECUTED");                   //Исполнено
+
+    private String taskStatus;
+
+    TaskStatus(String taskStatus) {
+        this.taskStatus = taskStatus;
+    }
+
+    public String getTaskStatus() {
+        return taskStatus;
+    }
+}
+
+/**
+ * DTO Модель для описания исполнителя поручения {@Link Task}.
+ */
+public class TaskExecutorsDto {
+
+    @Schema(description = "Идентификатор исполнителя поручения")
+    private UUID id;
+
+    @JsonIgnore
+    private String organizationId;
+
+    @Schema(description = "Идентификатор поручения")
+    private UUID taskId;
+
+    @JsonIgnore
+    private String taskOrgId;
+
+    @Schema(description = "Поручение")
+    private TaskDto task;
+
+    @Schema(description = "Дата назначения")
+    private Instant createDate;
+
+    @Schema(description = "Дата исполнения")
+    private Instant executedDate;
+
+    @Schema(description = "Исполнитель поручения")
+    private UserInfoDto executor;
+
+    @Schema(description = "Список документов исполнения")
+    private List<TaskDocumentLinkDto> taskDocumentLinks;
+
+    @Schema(description = "Список вложений прикрепленных к поручению")
+    private List<AttachmentTaskDto> attachments;
+
+    @Schema(description = "Ответственный исполнитель")
+    private Boolean responsible;
+
+    @Schema(description = "Исполнен методом выполнения за всех")
+    private Boolean executedByExecuteForAll;
+
+    @Schema(description = "Исполнил за всех")
+    private Boolean executedForAll;
+
+    @Schema(description = "Отправлено на доработку")
+    private Boolean revision;
+
+    @Schema(description = "ИД родительского поручения")
+    private UUID parentTaskId;
+
+    @Schema(description = "Текст исполнения поручения")
+    private String stampText;
+
+    @Schema(description = "Кол-во ссылок на документы")
+    private Integer linkCount;
+
+    @Schema(description = "Кол-во загруженных файлов")
+    private Integer executionDocCount;
+
+    private Integer childTaskCount;
+
+    public TaskExecutorsDto() {
+    }
+
+/**
+ * DTO Модель для хранения документов исполнения при исполнении поручений.
+ * Хранит ссылки на другие документы БД приложения СЭД. Используется для связи отметки об исполнении поручения {@link TaskStamp}
+ * и документов.
+ */
+public class TaskDocumentLinkDto {
+
+    @Schema(description = "Идентификатор документа исполнения")
+    private UUID id;
+
+    @JsonIgnore
+    private String organizationId;
+
+    @Schema(description = "Идентификатор исполнителя поручения в документе")
+    private UUID executorId;
+
+    @JsonIgnore
+    private String executorOrgId;
+
+    @Schema(description = "Исполнитель поручения")
+    private TaskExecutorsDto taskExecutor;
+
+    @Schema(description = "Идентификатор документа")
+    private UUID documentId;
+
+    @JsonIgnore
+    private String documentOrgId;
+
+    @Schema(description = "Документ исполнения")
+    private DocumentDto executionDocuments;
+
+    private boolean deleted;
+
+    public TaskDocumentLinkDto() {
+    }
+
+/**
+ * DTO Модель для описания вложений прикрепленных к поручению
+ */
+public class AttachmentTaskDto {
+
+    @Schema(description = "Идентификатор вложения прикрепленного к поручению")
+    private UUID id;
+
+    @JsonIgnore
+    private String organizationId;
+
+    @JsonIgnore
+    private UUID minioUuid;
+
+    @Schema(description = "Наименование вложения прикрепленного к поручению")
+    private String name;
+
+    @Schema(description = "Размер вложения прикрепленного к поручению")
+    private Long size = 0L;
+
+    @JsonIgnore
+    private String link;
+
+    @Schema(description = "Идентификатор исполнителя поручения")
+    private UUID executorId;
+
+    @JsonIgnore
+    private String executorOrgId;
+
+    @Schema(description = "Исполнитель поручения")
+    private TaskExecutorsDto taskExecutors;
+
+    public AttachmentTaskDto() {
+    }
+
+public class TaskChangeDateRequestDto {
+
+    private UUID id;
+    @Schema(description = "Была ли расмотрена заявка")
+    private Boolean executed;
+    @Schema(description = "Результат рассмотрения")
+    private Boolean result;
+    private UUID taskId;
+    @Schema(description = "Запрашиваемая дата")
+    private Instant date;
+    @Schema(description = "Дата создания заявки")
+    private Instant dateCreate;
+    @Schema(description = "Пречина переноса")
+    private String text;
+    @Schema(description = "Текущая дата исполнения")
+    private Instant currentExecutionDate;
+    private UserInfoDto author;
+
+    public TaskChangeDateRequestDto() {
+    }
+
+/**
+ * DTO Модель для хранения контроля документа или поручения.
+ */
+public class ControlDto {
+
+    @Schema(description = "Идентификатор типа контроля")
+    private UUID controlTypeId;
+    private String controlTypeOrgId;
+
+    @Schema(description = "Тип контроля")
+    private ControlTypeDto controlType;
+
+    @Schema(description = "Дата начала контроля")
+    private Instant controlDateStart;
+
+    @Schema(description = "Планируемая дата окончания контроля")
+    private Instant controlPlanDateEnd;
+
+    @Schema(description = "Реальная дата окончания контроля")
+    private Instant controlRealDateEnd;
+
+    @Schema(description = "Срок контроля в днях, изначально копируется из типа контроля")
+    private Integer controlTermDays;
+
+    @Schema(description = "Сотрудник который поставил на контроль")
+    private EmployeeDto controlInitiator;
+
+    @Schema(description = "Идентификатор сотрудника который поставил на контроль")
+    private UUID controlInitiatorId;
+
+    @JsonIgnore
+    private String controlInitiatorOrgId;
+
+    @Schema(description = "Контролер")
+    private EmployeeDto controlEmployee;
+
+    @Schema(description = "Идентификатор контролера")
+    private UUID controlEmployeeId;
+
+    @JsonIgnore
+    private String controlEmployeeOrgId;
+
+    @Schema(description = "Сотрудник который снял с контроля")
+    private EmployeeDto controlExecutor;
+
+    @Schema(description = "Идентификатор сотрудника который снял с контроля")
+    private UUID controlExecutorId;
+
+    @JsonIgnore
+    private String controlExecutorOrgId;
+
+    @Schema(description = "Активен ли сейчас контроль")
+    private Boolean onControl;
+
+    @Schema(description = "Метка снятия с контроля")
+    private Boolean removeControl = false;
+
+    public ControlDto() {
+    }
+
+/**
+ * DTO Модель для описания типов контроля
+ */
+public class ControlTypeDto implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @Schema(description = "Идентификатор типа контроля")
+    private UUID id;
+    private String organizationId;
+    @Schema(description = "Наименование типа контроля")
+    private String name;
+
+    @Schema(description = "Краткое наименование типа контроля")
+    private String shortName;
+
+    @Schema(description = "Срок контроля (кол-во дней)")
+    private Integer term;
+
+    @Schema(description = "Ответственный за контроль")
+    private EmployeeDto employee;
+
+    @Schema(description = "Идентификатор ответственного за контроль")
+    private UUID employeeId;
+
+    @Schema(description = "Признак активен ли тип контроля")
+    private Boolean active;
+
+    @JsonIgnore
+    private Boolean deleted;
+
+    private Instant createDate;
+
+    public ControlTypeDto(){
+    }
+
+public enum PeriodTaskInterval {
+
+    WEEK("Неделя"),
+    MONTH("Месяц"),
+    THREE_MONTHS("Квартал"),
+    SIX_MONTHS("Полгода"),
+    YEAR("Год");
+
+    String historyName;
+
+    PeriodTaskInterval(String historyName) {
+        this.historyName = historyName;
+    }
+
+    public String getHistoryName() {
+        return historyName;
+    }
+
+}
+
+/**
+ * DTO Модель для описания способа доставки
+ */
+public class DeliveryMethodDto implements Serializable {
+
+    private static final long serialVersionUID = 3175687518788322292L;
+
+    @Schema(description = "Идентификатор способа доставки")
+    private Long id;
+
+    @Schema(description = "Наименование способа доставки")
+    private String deliveryName;
+
+    @Schema(description = "Доставка АИСМВ")
+    private Boolean aismv = Boolean.FALSE;
+
+    @Schema(description = "Доставка Канцлер НЕКСТ")
+    private Boolean kanclerNext = Boolean.FALSE;
+
+    @Schema(description = "Признак активен ли способ доставки")
+    private Boolean active;
+    private Boolean system;
+
+    private Instant createDate;
+
+    public DeliveryMethodDto() {
+    }
+
+public class InvestmentProgramDto {
+
+    @Schema(description = "Идентификатор объекта инвестпрограммы")
+    private UUID id;
+
+    @Schema(description = "Наименование объекта инвестпрограммы")
+    private String name;
+
+    @Schema(description = "Признак активности")
+    private Boolean active;
+
+    @JsonIgnore
+    @Schema(description = "Признак удаления")
+    private Boolean deleted;
+
+    private Instant createDate;
+
+    public InvestmentProgramDto() {
+    }
+
+/**
+ * DTO Модель для описания версии для документов. Версиями могут обладать только следующие типы документов: внутренний и исходящий.
+ */
+public class DocumentVersionDto {
+
+    @Schema(description = "Идентификатор версии")
+    private UUID id;
+
+    @Schema(description = "Номер версии")
+    private int version;
+
+    @Schema(description = "Идентификатор документа")
+    private UUID documentId;
+
+    @Schema(description = "Документ")
+    private DocumentDto document;
+
+    private boolean deleted;
+
+    public DocumentVersionDto() {
+    }
+
+/**
+ * DTO Модель для описания процесса
+ */
+public class DocumentProcessDto implements Serializable {
+
+    @Schema(description = "Идентификатор процесса")
+    private UUID id;
+
+    @Schema(description = "Идентификатор текущего этапа процесса")
+    private UUID currentId;
+
+    @Schema(description = "Текущий этап процесса")
+    private DocumentProcessItemDto current;
+
+    @Schema(description = "Идентификатор следующего этапа процесса")
+    private UUID nextId;
+
+    @Schema(description = "Следующий этап процесса")
+    private DocumentProcessItemDto next;
+
+    @Schema(description = "Идентификатор документа")
+    private UUID documentId;
+
+    @Schema(description = "Список этапов процесса")
+    private List<DocumentProcessItemDto> items;
+
+    @Schema(description = "Признак прошел ли документ все этапы")
+    private Boolean completed;
+
+    @Schema(description = "Признак начал ли документ движение по маршруту")
+    private Boolean started;
+
+
+    public DocumentProcessDto() {
+    }
+
+/**
+ * DTO Модель для описания процесса
+ */
+public class DocumentProcessItemDto implements Serializable {
+
+    @Schema(description = "Идентификатор этапа процесса")
+    private UUID id;
+
+    private ProcessType type;
+
+    @Schema(description = "Порядковый номер")
+    private Integer order;
+
+    @Schema(description = "Наименование")
+    private String name;
+
+    @Schema(description = "Количество дней исполнения")
+    private Integer days;
+
+    @Schema(description = "Дата начала этапа процесса")
+    private Instant start;
+
+    @Schema(description = "Дата окончания этапа процесса")
+    private Instant end;
+    private Boolean fileSign;
+
+    @Schema(description = "Признак был ли завершен этап процесса")
+    private Boolean completed = Boolean.FALSE;
+
+    @Schema(description = "Признак был ли начаты действия по этапу процесса")
+    private Boolean started = Boolean.FALSE;
+
+    @Schema(description = "Список исполнителей этапа процесса")
+    private List<DocumentProcessExecutorDto> executors;
+
+    @Schema(description = "Идентификатор процесса")
+    private UUID processId;
+
+    @Schema(description = "ИД следующего исполнителя")
+    private UUID nextExecutorId;
+
+    @Schema(description = "Тип исполнения процесса")
+    private ProcessEmployeeActionQueueType actionQueueType;
+
+    @Schema(description = "ИД таски из дефинишена")
+    private String taskDefinitionKey;
+
+    private UUID documentId;
+
+    public DocumentProcessItemDto() {
+    }
+
+/**
+ * DTO Модель для описания исполнителя процесса в документе
+ */
+public class DocumentProcessExecutorDto implements Serializable {
+
+    @Schema(description = "Идентификатор исполнителя процесса в документе")
+    private UUID id;
+
+    @Schema(description = "Дата начала исполнения")
+    private Instant start;
+
+    @Schema(description = "Дата окончания исполнения")
+    private Instant executionEnd;
+
+    @Schema(description = "Дата окончания исполнения")
+    private Instant end;
+
+    @Schema(description = "Идентификатор этапа процесса")
+    private UUID documentProcessItemId;
+
+    @Schema(description = "Комментарий")
+    private String comment;
+
+    @Schema(description = "Признак результата исполнения")
+    private Boolean result;
+
+    @Schema(description = "Исполнитель")
+    private UserInfoDto executor;
+
+    @Schema(description = "Позиция исполнителя в процессе")
+    private Integer order;
+
+    public DocumentProcessExecutorDto() {
+    }
+
+/**
+ * Тип действия участника процесса
+ */
+public enum ProcessEmployeeActionQueueType {
+
+    /** Действия в процессе можно выполнять как угодно */
+    ANY,
+
+    /** Действия в процессе можно выполнять только по порядковому номеру order */
+    ORDERED
+
+}
+
+/**
+ * DTO Модель для описания вложений прикрепленных к документу
+ */
+public class AttachmentDocumentDto implements Serializable {
+
+    @Schema(description = "Идентификатор вложения")
+    private UUID id;
+    @Schema(description = "Наименование вложения")
+    private String name;
+    private Instant uploadDate;
+    @Schema(description = "Размер вложения")
+    private Long size;
+    private AttachmentType type;
+    @Schema(description = "Список ЭЦП вложения")
+    private List<AttachmentSignature> signs;
+    @Schema(description = "Идентификатор документа")
+    private UUID documentId;
+    @Schema(description = "Тип вложения")
+    private AttachmentDocumentType attachmentDocumentType;
+    private UUID authorId;
+    private UUID lastModifyUserId;
+    private Instant modifyDate;
+    @JsonIgnore
+    private String sourceMinioName;
+    @JsonIgnore
+    private String sourceBucketName;
+    private String sourceOriginalName;
+
+    public AttachmentDocumentDto() {
+    }
+
+public enum AttachmentType {
+
+    MAIN_ATTACHMENT,
+
+    ADDITIONAL_ATTACHMENT;
+
+}
+
+/**
+ * Модель для описания ЭЦП документа
+ */
+public class AttachmentSignature implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @Schema(description = "Идентификатор ЭЦП")
+    private UUID id;
+
+    @Schema(description = "Дата формирования подписи ЭЦП")
+    private Instant date;
+
+    @Schema(description = "Признак была ли выполнена проверка валидности ЭЦП")
+    private Boolean check;
+
+    @Schema(description = "ЭЦП")
+    private Signature sign;
+
+    public AttachmentSignature() {
+    }
+
+    public AttachmentSignature(String signData) {
+        this.sign = new Signature(signData);
+    }
+
+    public AttachmentSignature(UUID id, Instant date, Signature sign) {
+        this.id = id;
+        this.date = date;
+        this.sign = sign;
+    }
+
+/**
+ * Модель для описания электронно цифровой подпись (ЭЦП).
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class Signature implements Serializable {
+
+    private static final long serialVersionUID = -8221897274139578590L;
+
+    @Schema(description = "Идентификатор открытого ключа подписавшего")
+    private String keyId;
+    @Schema(description = "Имя подписавшего")
+    private String signer;
+    @Schema(description = "Дата/время подписи")
+    private Instant signtime;
+    @Schema(description = "Тип операции подписания")
+    private String operationType;
+    @Schema(description = "Значение ЭЦП в исходной системе (если выполнялось заверение третьей стороной)")
+    private String origSignature;
+    @NotNull
+    @Schema(description = "ЭЦП подпись в base64")
+    private String data;
+    @Schema(description = "Номер сертификата")
+    private String certSerial;
+    @Schema(description = "ФИО подписавшего")
+    private String signerFio;
+    @Schema(description = "Дата подписания")
+    private Instant signerDate;
+    @Schema(description = "Должность подписавшего")
+    private String signerPost;
+    @Schema(description = "Организация подписавшего")
+    private String signerOrg;
+    @Schema(description = "Личный номер")
+    private String personalNumber;
+    @Schema(description = "Издатель сертификата")
+    private String issuer;
+    private Instant start;
+    private Instant end;
+    private Integer signCount;
+
+    private String attrCertIssuer;
+    private String attrCertIssuerId;
+    private String attrOrganizationName;
+    private String attrPost;
+    private String attrUnp;
+    private String attrUnpf;
+    private String attrAddress;
+    private Instant attrStart;
+    private Instant attrEnd;
+
+    public Signature() {
+    }
+
+public enum AttachmentDocumentType {
+
+    /** Обычное вложение */
+    ATTACHMENT("ATTACHMENT"),
+    /** Вложение для печати */
+    PRINT_DOCUMENT("PRINT_DOCUMENT"),
+    /** Проект решения */
+    PROJECT_SOLUTION("PROJECT_SOLUTION"),
+    /** Обоснование */
+    RATIONALE("RATIONALE"),
+    /** Документы по вопросу */
+    DOCUMENTS_QUESTION("DOCUMENTS_QUESTION"),
+    /** Лист ознакомления */
+    INTRODUCTION_LIST("INTRODUCTION_LIST"),
+    /** Список согласования */
+    AGREEMENT_LIST("AGREEMENT_LIST"),
+    /** Решение */
+    DECISION("DECISION"),
+    RKK("RKK");
+
+    private String name;
+
+    AttachmentDocumentType(String name) {
+        this.name = name;
+    }
+
+/**
+ * DTO Модель для описания адресатов документа
+ */
+public class DocumentRecipientDto implements Serializable {
+
+    private static final long serialVersionUID = 1200492011895268147L;
+
+    @Schema(description = "Идентификатор адресата документа")
+    private UUID id;
+
+    @Schema(description = "Идентификатор документа")
+    private UUID documentId;
+
+    @Schema(description = "Наименование адресата")
+    private String name;
+
+    private RecipientStatus status;
+
+    @Schema(description = "Отправитель")
+    private EmployeeDto from;
+
+    @Schema(description = "ИД отправителя")
+    private UUID fromId;
+
+    @Schema(description = "Дата отправки")
+    private Instant dateSend;
+
+    @Schema(description = "Кому отправить")
+    private String toPeople;
+
+    @Schema(description = "Признак доставки")
+    private Boolean delivered;
+
+    @Schema(description = "Признак отправлено ли системой")
+    private Boolean system;
+
+    @Schema(description = "Идентификатор адресата СМДО")
+    private UUID subscriberId;
+
+    @Schema(description = "Идентификатор способа доставки")
+    private Long deliveryMethodId;
+
+    @Schema(description = "Способ доставки")
+    private DeliveryMethodDto deliveryMethod;
+
+    private CorrespondentDto correspondent;
+    private SubscriberDto subscriber;
+
+    private UUID correspondentId;
+
+    private RecipientType type;
+    private Boolean lock;
+    private AismvPackageType aismvPackageType;
+    private UUID aismvCurrentDeliveryId;
+    private Boolean aismvRouterAccept;
+    private Boolean aismvAbonentAccept;
+    private Boolean aismvRouterError;
+    private Boolean aismvAbobentAcceptAck;
+    private Boolean aismvAbonentAcceptError;
+    private Boolean aismvAbonentRegAck;
+    private Boolean aismbAbonentRegReject;
+
+    // Договор УНП
+    private String unp;
+    // Договор подписан контрогентом
+    private Instant signDate;
+    //Договор номер контракта контрагента
+    private String contractNumber;
+
+
+    public DocumentRecipientDto() {
+    }
+
+/**
+ * Перечисления для описания статусов получателя
+ */
+public enum RecipientStatus {
+
+    SENDING("SENDING"),
+    SENDED("SENDED"),
+    RECEIVED("RECEIVED"),
+    AISMV_SENDED("AISMV_SENDED"),
+    AISMV_RECEIVED("AISMV_RECEIVED"),
+    CANCEL("CANCEL"),
+    FAILED("FAILED");
+
+    private String name;
+
+    RecipientStatus(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+}
+
+public class CorrespondentDto {
+
+    @Schema(description = "Идентификатор адресата/корреспондента")
+    private UUID id;
+
+    @Schema(description = "Внешний идентификатор")
+    private String externalId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации адресата/корреспондента")
+    private String organizationId;
+
+    @Schema(description = "Наименование адресата/корреспондента")
+    private String name;
+
+    @Schema(description = "Идентификатор способа доставки")
+    private Long deliveryMethodId;
+
+    @Schema(description = "Способ доставки")
+    private DeliveryMethodDto deliveryMethod;
+
+    @Schema(description = "Адрес")
+    private String address;
+
+    @Schema(description = "Постфикс")
+    private String postfix;
+
+    private CountryDto country;
+
+    private UUID countryId;
+
+    private UUID cityId;
+
+    private String cityName;
+
+    private UUID regionId;
+
+    private String regionName;
+
+    private UUID districtId;
+
+    private String districtName;
+
+    @NotNull
+    @Schema(description = "Код")
+    private String code;
+
+    @Schema(description = "Отметка является ли адресат/корреспондент гос. органом")
+    private Boolean stateOrgan;
+
+    @Schema(description = "Почтовый индекс")
+    private String postcode;
+
+    @Schema(description = "Телефон")
+    private String phone;
+
+    @Schema(description = "Почта")
+    private String mail;
+
+    @Schema(description = "Признак является ли данный адресат/корреспондент действующим или упраздненным")
+    private Boolean active;
+
+    private CorrespondentType type;
+
+    @JsonIgnore
+    @Schema(description = "Признак удаления")
+    private Boolean deleted;
+
+    private DepartmentDto department;
+
+    private UUID departmentId;
+
+    private GeneralSetupDto setup;
+
+    private String setupId;
+    private UUID subscriberId;
+    private SubscriberDto subscriber;
+
+    @Schema(description = "Список сотрудников организации")
+    private List<UUID> employeeIds;
+
+    private Instant createDate;
+
+    public CorrespondentDto() {
+    }
+
+public class GeneralSetupDto {
+
+    @Schema(description = "Идентификатор организации общей настройки документа СЭД")
+    private String organizationId;
+
+    @Schema(description = "Наименование организации общей настройки документа СЭД")
+    private String organizationName;
+
+    @Schema(description = "Идентификатор страны")
+    private UUID countryId;
+
+    @Schema(description = "Страна")
+    private CountryDto country;
+
+    @Schema(description = "Идентификатор профиля документа")
+    private UUID profileId;
+
+    @Schema(description = "Профиль документа")
+    private DocumentProfileDto profile;
+
+    @Schema(description = "Профиль для входящих документов аис мв")
+    private UUID aismvProfileId;
+
+    @Schema(description = "Профиль для входящих документов аис мв")
+    private DocumentProfileDto aismvProfile;
+
+    @Schema(description = "Идентификатор автора для автоматически создаваемых входящих документов")
+    private UUID employeeId;
+
+    @Schema(description = "Автор для автоматически создаваемых входящих документов")
+    private EmployeeDto employee;
+
+    @Schema(description = "Автор документов для аис мв")
+    private UUID aismvAuthorEmployeeId;
+
+    @Schema(description = "Автор документов для аис мв")
+    private EmployeeDto aismvAuthor;
+
+    @Schema(description = "Автор документов-обращений для аис мв")
+    private UUID aismvAppealAuthorEmployeeId;
+
+    @Schema(description = "Автор документов-обращений для аис мв")
+    private EmployeeDto aismvAppealAuthor;
+
+    @Schema(description = "Идентификатор группы пользователей")
+    private UUID groupId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации группы пользователей")
+    private String groupOrganizationId;
+
+    @Schema(description = "Группа пользователей")
+    private GroupDto group;
+
+    private SubscriberDto subscriber;
+
+    private UUID subscriberId;
+
+    @Schema(description = "Унифицированный код из окрб 010-95 таблица 1 (https://minjust.gov.by/upload/iblock/d97/OKRB.pdf)")
+    private String classDoc;
+
+    @Schema(description = "Вид по таблицы 2 окб (https://minjust.gov.by/upload/iblock/d97/OKRB.pdf)")
+    private String objectType;
+
+    private UUID aismvAppealProfileId;
+    private DocumentProfileDto aismvAppealProfile;
+
+    @Schema(description = "Картинка с подписью")
+    private Attachment attachmentSign;
+
+    @Schema(description = "Отключение редактирования подписанных файлов")
+    private Boolean disableSignedFilEdit;
+
+    private Boolean enableRemoveDraftDocs;
+    private Integer daysToKeepDraftDocs;
+
+    private WorkDaysRoundPolicy executionDateRoundPolicy = WorkDaysRoundPolicy.DOWN;
+    private WorkDaysRoundPolicy defaultProcessDateRoundPolicy = WorkDaysRoundPolicy.DOWN;
+
+    @Schema(description = "Продолжительность рабочего дня")
+    private LocalTime workDayStart;
+    private LocalTime workDayEnd;
+
+    public GeneralSetupDto() {
+    }
+
+public class CountryDto implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @Schema(description = "Идентификатор страны")
+    private UUID id;
+
+    @Min(value = 1, message = "Code should not be less than 1")
+    @Max(value = 999, message = "Code should not be over 999")
+    @Schema(description = "Цифровой код страны")
+    private Integer code;
+
+    @Schema(description = "Краткое наименование страны")
+    private String shortName;
+
+    @Schema(description = "Полное наименование страны")
+    private String fullName;
+
+    @Schema(description = "Альфа код два")
+    private String alphaCodeTwo;
+
+    @Schema(description = "Альфа код три")
+    private String alphaCodeThree;
+
+    @Schema(description = "Признак активна ли страна")
+    private Boolean active;
+
+    private Instant createDate;
+
+    public CountryDto(){
+    }
+
+/**
+ * DTO Модель для описания профиля документа
+ */
+public class DocumentProfileDto implements Serializable {
+
+    private static final long serialVersionUID = 7573221445494886072L;
+
+    @Schema(description = "Идентификатор профиля документа")
+    private UUID id;
+    private String organizationId;
+    @Schema(description = "Наименование профиля документа")
+    private String name;
+    @Schema(description = "Формула рег. номера")
+    private List<String> formula;
+    @Schema(description = "Признак того что этот профиль будет использоваться для создания документов прищедших по АИСМВ")
+    private Boolean autoCreateIncomingDoc = Boolean.FALSE;
+    @Schema(description = "Признак активен ли профиль документа")
+    private Boolean active;
+    @Schema(description = "Идентификатор вида документа")
+    private Long documentTypeId;
+    private String deploymentId;
+    @Schema(description = "Идентификатор журнала регистрации")
+    private UUID journalId;
+    @Schema(description = "Журнал регистрации")
+    private RegistrationJournalDto registrationJournal;
+    @Schema(description = "Вид документа")
+    private DocumentTypeDto documentType;
+    @Schema(description = "Тип документа")
+    private DocumentCategoryConstants documentCategory;
+    @Schema(description = "Идентификатор автора документа")
+    private UUID docAuthorId;
+    @Schema(description = "Автор документа")
+    private EmployeeDto docAuthor;
+    @Schema(description = "Идентификатор корреспондента")
+    private UUID correspondentId;
+    @Schema(description = "Корреспондент")
+    private CorrespondentDto correspondent;
+    @Schema(description = "Кол-во дней исполнения")
+    private Integer daysExecution;
+    /** Авторегистрация документа */
+    private Boolean autoRegistration;
+    @Schema(description = "Автоматическое движение по маршруту")
+    private Boolean autoRouting;
+    @Schema(description = "Автоматически ставить на контроль после регистрации")
+    private Boolean autoControl;
+    @Schema(description = "Кол-во дней контроля")
+    private Long controlDays;
+    private ControlTypeDto controlType;
+    private UUID controlTypeId;
+    private UUID processDirectoryId;
+    private BpmnProcessDirectoryDto processDirectory;
+    private String xml;
+    private List<DirectoryProcessDefinition> processDefinition;
+
+    @Schema(description = "Префикс повторных обращений")
+    private String retryPrefix;
+
+    @Schema(description = "Постфикс повторных обращений")
+    private String retryPostfix;
+
+    @Schema(description = "Префикс идентичных обращений")
+    private String identicalPrefix;
+
+    @Schema(description = "Постфикс идентичных обращений")
+    private String identicalPostfix;
+
+    @Schema(description = "Начальное значение счетчика повторности")
+    private Integer repetitionCounterInitial;
+
+    @Schema(description = "Начальное значение счетчика идентичности")
+    private Integer identityCounterInitial;
+
+    @Schema(description = "Суффикс анонимного обращения")
+    private String anonymousSuffix;
+
+    @Schema(description = "Суффикс коллективного обращения")
+    private String collectiveSuffix;
+
+    @Schema(description = "обязательные поля")
+    private List<RequiredField> requiredField;
+
+    @Schema(description = "Включить списки доступа")
+    private Boolean access;
+
+    private Instant createDate;
+    private UUID appealOrganizationJournalId;
+    private String appealOrganizationJournalOrgId;
+    private RegistrationJournalDto appealOrganizationJournal;
+
+    @Schema(description = "Идентификатор грифа доступа")
+    private UUID accessGriefId;
+
+    @Schema(description = "Гриф доступа")
+    private AccessGriefDto accessGrief;
+
+    @Schema(description = "Включить использование грифа доступа")
+    private Boolean enableAccessGrief = Boolean.FALSE;
+
+    @Schema(description = "Признак типовой ли контракт")
+    private Boolean contractTypical;
+
+    @Schema(description = "Идентификатор формы документа")
+    private UUID documentFormId;
+
+    @Schema(description = "Форма документа")
+    private DocumentFormDto documentForm;
+
+    public UUID getAppealOrganizationJournalId() {
+        return appealOrganizationJournalId;
+    }
+
+    public DocumentProfileDto setAppealOrganizationJournalId(UUID appealOrganizationJournalId) {
+        this.appealOrganizationJournalId = appealOrganizationJournalId;
+        return this;
+    }
+
+/**
+ * DTO Модель для описания журнала регистрации
+ */
+public class RegistrationJournalDto implements Serializable {
+
+    private static final long serialVersionUID = -7677899244309692268L;
+
+    @Schema(description = "Идентификатор журнала регистрации")
+    private UUID id;
+    @Schema(description = "Наименование журнала регистрации")
+    private String journalName;
+    @Schema(description = "Значение счетчика")
+    private Long counterValue;
+    @Schema(description = "Признак активен ли журнал регистрации")
+    private Boolean active;
+    @JsonIgnore
+    private transient String organizationId;
+    private Instant createDate;
+
+    public RegistrationJournalDto() {
+    }
+
+public class BpmnProcessDirectoryDto {
+
+    private UUID id;
+    @JsonIgnore
+    private String organizationId;
+    private String name;
+    @JsonIgnore
+    private String fileName;
+    @JsonIgnore
+    private String deploymentId;
+    private DocumentCategoryConstants docCategory;
+    private Instant createDate;
+    @JsonIgnore
+    private Boolean deleted = Boolean.FALSE;
+    private Boolean active = Boolean.TRUE;
+
+    public BpmnProcessDirectoryDto() {
+    }
+
+/**
+ * Модель описывающая этап процесса в справочнике
+ */
+@Deprecated
+public class DirectoryProcessDefinition implements Serializable {
+
+    private static final long serialVersionUID = 3569682584438784208L;
+    @NotNull
+    @Min(1)
+    @Schema(description = "Порядковый номер процесса")
+    private Integer order;
+    @Schema(description = "Список сотрудников (исполнителей) процесса")
+    private List<@Valid DirectoryProcessEmployee> employees;
+    @NotNull
+    private ProcessType type;
+    private UUID profileId;
+    @NotBlank
+    @Size(max = 254, message = "Value length should be 2-255 signs")
+    @Schema(description = "Наименование процесса")
+    private String name;
+
+    /**
+     * Количество дней исполнения для процесса
+     */
+    @Schema(description = "Количество дней для исполнения процесса")
+    private Integer days;
+
+    @Schema(description = "Тип выполнения действий в процессе, null = ANY")
+    private ProcessEmployeeActionQueueType empActionQueueType;
+
+    public DirectoryProcessDefinition() {
+    }
+
+/**
+ * Участник процесса
+ */
+public class DirectoryProcessEmployee implements Serializable {
+
+    @NotNull
+    /** Порядковый номер в процессе */
+    private Integer order;
+
+    @NotNull
+    /** Участник процесса */
+    private EmployeeDto employee;
+
+    public DirectoryProcessEmployee() {
+    }
+
+    public DirectoryProcessEmployee(Integer order, EmployeeDto employee) {
+        this.order = order;
+        this.employee = employee;
+    }
+
+@Schema(description = "Перечисление для описания типов процесса")
+public enum ProcessType {
+
+    /** создание */
+    NEW("NEW",DocumentStatus.NEW,DocumentStatus.NEW),
+    /** согласование */
+    AGREEMENT("AGREEMENT",DocumentStatus.AGREEMENT,DocumentStatus.AGREED),
+    /** подписание */
+    SIGNING("SIGNING",DocumentStatus.SIGNING,DocumentStatus.SIGNED),
+    /** утверждение */
+    STATEMENT("STATEMENT",DocumentStatus.STATEMENT,DocumentStatus.APPROVED),
+    /** регистрация  */
+    REGISTRATION("REGISTRATION",DocumentStatus.REGISTRATION,DocumentStatus.REGISTERED),
+    /** рассмотрение */
+    REVIEW("REVIEW",DocumentStatus.REVIEW,DocumentStatus.REVIEWED),
+    /** исполнение */
+    EXECUTION("EXECUTION",DocumentStatus.EXECUTION,DocumentStatus.EXECUTED),
+    /** Отправка */
+    DISPATCH("DISPATCH",DocumentStatus.DISPATCH,DocumentStatus.SENT),
+    /** подготовка */
+    PREPARATION("PREPARATION",DocumentStatus.PREPARATION,DocumentStatus.PREPARATION),
+    /** оформление */
+    PAPERWORK("PAPERWORK",DocumentStatus.PAPERWORK,DocumentStatus.FORMALIZED),
+    /** одобрение */
+    ACCEPTANCE("ACCEPTANCE",DocumentStatus.ACCEPTANCE,DocumentStatus.ACCEPTED),
+    /** Исполнение договора */
+    CONTRACT_EXECUTION("CONTRACT_EXECUTION",DocumentStatus.CONTRACT_EXECUTION,DocumentStatus.CONTRACT_CLOSED);
+
+    @NotNull
+    private String name;
+    private String historyName;
+    private String historyStepStartName;
+    private String historyStepEndName;
+    private String actionName;
+    private DocumentStatus start;
+    private DocumentStatus end;
+
+    static {
+        NEW.historyName = "Новый";
+        AGREEMENT.historyName = "Согласование";
+        SIGNING.historyName = "Подписание";
+        STATEMENT.historyName = "Утверждение";
+        REGISTRATION.historyName = "Регистрация";
+        REVIEW.historyName = "Рассмотрение";
+        EXECUTION.historyName = "Исполнение";
+        DISPATCH.historyName = "Отправка";
+        PREPARATION.historyName = "Подготовка";
+        PAPERWORK.historyName = "Оформление";
+        ACCEPTANCE.historyName = "Одобрение";
+        CONTRACT_EXECUTION.historyName = "Исполнение договора";
+
+        NEW.historyStepStartName = "Этап Новый начат";
+        AGREEMENT.historyStepStartName = "Отправлен на согласование: ";
+        SIGNING.historyStepStartName = "Отправлен на подписание: ";
+        STATEMENT.historyStepStartName = "Отправлен на утверждение: ";
+        REGISTRATION.historyStepStartName = "Отправлен на регистрацию: ";
+        REVIEW.historyStepStartName = "Отправлен на рассмотрение: ";
+        EXECUTION.historyStepStartName = "Отправлен на исполнение";
+        DISPATCH.historyStepStartName = "Передан на отправку: ";
+        PREPARATION.historyStepStartName = "Отправлен на подготовку: ";
+        PAPERWORK.historyStepStartName = "Отправлен на оформление: ";
+        ACCEPTANCE.historyStepStartName = "Отправлен на одобрение: ";
+        CONTRACT_EXECUTION.historyStepStartName = "Отправлен на исполнение договора: ";
+
+        NEW.historyStepEndName = "Этап Новый завершен";
+        AGREEMENT.historyStepEndName = "Согласован";
+        SIGNING.historyStepEndName = "Подписан";
+        STATEMENT.historyStepEndName = "Утвержден";
+        REGISTRATION.historyStepEndName = "Этап Регистрация завершен";
+        REVIEW.historyStepEndName = "Рассмотрен";
+        EXECUTION.historyStepEndName = "Исполнен";
+        DISPATCH.historyStepEndName = "Отправлен";
+        PREPARATION.historyStepEndName = "Этап Подготовка завершен";
+        PAPERWORK.historyStepEndName = "Этап Оформление завершен";
+        ACCEPTANCE.historyStepEndName = "Этап Одобрение завершен";
+        CONTRACT_EXECUTION.historyStepEndName = "Этап Исполнение договора завершен";
+
+        REVIEW.actionName = "Рассмотрено: ";
+        REGISTRATION.actionName = "Зарегистрирован";
+        STATEMENT.actionName = "Утвержден: ";
+        SIGNING.actionName = "Подписан: ";
+        DISPATCH.actionName = "Выполнил отправку";
+        AGREEMENT.actionName = "Согласовано: ";
+        PREPARATION.actionName = "Подготовлен: ";
+        PAPERWORK.actionName = "Оформлен: ";
+        ACCEPTANCE.actionName = "Одобрен: ";
+        CONTRACT_EXECUTION.actionName = "Закрыт: ";
+    }
+
+    ProcessType(String name, DocumentStatus start, DocumentStatus end) {
+        this.name = name;
+        this.start = start;
+        this.end = end;
+    }
+
+/**
+ * Тип действия участника процесса
+ */
+public enum ProcessEmployeeActionQueueType {
+
+    /** Действия в процессе можно выполнять как угодно */
+    ANY,
+
+    /** Действия в процессе можно выполнять только по порядковому номеру order */
+    ORDERED
+
+}
+
+public enum RequiredField {
+
+    /** файл(ы) вложения */
+    ATTACHMENT,
+
+    /** исх.№ организации-корреспондента */
+    OUT_CORRESPONDENT_ORG_NUM,
+
+    /** дата документа организации-корреспондента */
+    OUT_CORRESPONDENT_ORG_DATE,
+
+    /** наименование организации-корреспондента */
+    OUT_CORRESPONDENT_NAME,
+
+    /** кем подписан */
+    DOC_SIGNERS,
+
+    /** наименование адресата */
+    RECIPIENT_NAME,
+
+    /** предвыбранные дела */
+    AFFAIRS,
+
+    /** контрагенты в договорах*/
+    CONTRACT_CORRESPONDENT;
+
+}
+
+public class AccessGriefDto {
+
+    private UUID id;
+
+    private String name;
+
+    private String shortName;
+
+    private Boolean active;
+
+    private Instant createDate;
+
+    public AccessGriefDto() {
+    }
+
+public class DocumentFormDto {
+
+    @Schema(description = "Идентификатор формы документа")
+    private UUID id;
+
+    @Schema(description = "Наименование формы документа")
+    @NotNull
+    @NotEmpty
+    private String name;
+
+    @Schema(description = "Константа документа")
+    @NotNull
+    private DocumentCategoryConstants documentConstant;
+
+    @Schema(description = "Признак активен ли форма документа")
+    private Boolean active = Boolean.TRUE;
+
+    @Schema(description = "Признак системной формы документа")
+    private Boolean system = Boolean.FALSE;
+
+    @Schema(description = "Идентификатор типа документа")
+    @NotNull
+    private Long documentTypeId;
+
+    @Schema(description = "Тип документа")
+    private DocumentTypeDto documentType;
+
+    @Schema(description = "Общие настройки формы")
+    private Map<String, Object> general;
+
+    @Schema(description = "Поля формы документа")
+    private List<DocumentFormField> fields;
+
+    public DocumentFormDto() {
+    }
+
+    public UUID getId() {
+        return id;
+    }
+
+    public DocumentFormDto setId(UUID id) {
+        this.id = id;
+        return this;
+    }
+
+public class DocumentFormField implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    private String id;
+    private Map<String, Object> payload;
+
+    public DocumentFormField() {
+    }
+
+public class GroupDto {
+
+    private UUID id;
+    @Size(max = 255, min = 1)
+    private String name;
+    @NotNull
+    private GroupType type;
+    @NotNull
+    private Boolean mixed;
+    private Instant createDate;
+
+    public GroupDto() {
+    }
+
+public enum GroupType {
+
+    /** Для доступа */
+    ACCESS,
+
+    /** Для рассылки */
+    DISTRIBUTION;
+
+}
+
+public class SubscriberDto implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    private UUID id;
+    private String smdoCode;
+    private String endDate;
+    private String connectionDate;
+    private String easId;
+    private Boolean oaisAbonent;
+    private String startDate;
+    private String status;
+    private String fax;
+    private String home;
+    private String phone;
+    private String subscriberStatus;
+    private String unp;
+    private String corpus;
+    private String email;
+    private String postIndex;
+    private String soato;
+    private String street;
+    private UUID objid;
+    private String rowId;
+    private Instant createdOn;
+    private Instant updatedOn;
+    private UUID oaisOrgId;
+    private String name;
+    private String shortName;
+    private UUID sedTypeId;
+    private UUID sedTypeObjectId;
+    private String typesedRowId;
+    private String typesedValue;
+
+    public SubscriberDto() {
+    }
+
+/**
+ * Модель для описания вложенного файла
+ */
+@Embeddable
+public class Attachment implements Serializable {
+
+    private static final long serialVersionUID = -1L;
+
+    @Column(name = "original_name")
+    private String originalName;
+
+    @Column(name = "size")
+    private Long size = 0L;
+
+    @Column(name = "bucket_name")
+    private String bucketName;
+
+    @Column(name = "minio_name")
+    private String minioName;
+
+    public Attachment(){
+    }
+
+public enum RecipientType {
+
+    /** Обычный корреспонеднт */
+    NORMAL,
+
+    AISMV,
+
+    DIRECTUM,
+
+    /** Фелиал */
+    GTB_ORG;
+
+}
+
+public enum AismvPackageType {
+
+    DOCUMENT,
+    ADD_DOCUMENT,
+    ACCEPT_ACK,
+    REG_REJECT_ACK,
+    REG_ACK,
+    DOCUMENT_ANSWER;
+
+}
+
+@Schema(description = "Перечисление для описания типов как создан документ")
+public enum DocumentCreateType {
+
+    /** Документ создан пользователем */
+    MANUAL,
+
+    /** Документ получит через АИС МВ */
+    AISMV,
+
+    /** Документ создан был в директум */
+    DIRECTUM;
+
+}
+
+public enum FormMeetingQuestionType {
+
+    /**
+     * очная встреча
+     */
+    INTRAMURAL("Очно"),
+
+    /**
+     * встреча методом опроса
+     */
+    POLLING_METHOD("Методом опроса");
+
+    private String type;
+
+    FormMeetingQuestionType(String type) {
+        this.type = type;
+    }
+
+public class DocumentQuestionDto {
+
+    private UUID id;
+
+    @JsonIgnore
+    private String organizationId;
+
+    @Schema(description = "Номер вопроса")
+    private Integer questionNumber;
+
+    @Schema(description = "Формулировка вопроса")
+    private String question;
+
+    private UUID documentId;
+
+    private String documentOrgId;
+
+    private DocumentDto document;
+
+    @Schema(description = "Идентификатор документа заседания")
+    private UUID documentMeetingQuestionId;
+
+    @Schema(description = "Идентификатор организации документа заседания")
+    private String documentMeetingQuestionOrgId;
+
+    private DocumentDto documentMeetingQuestion;
+
+    @Schema(description = "Список докладчиков")
+    private List<SpeakerDto> speakers;
+
+    public DocumentQuestionDto() {
+    }
+
+public class SpeakerDto {
+
+    @Schema(description = "Идентификатор докладчика")
+    private UUID id;
+
+    @Schema(description = "Идентификатор вопроса")
+    private UUID questionId;
+
+    @Schema(description = "Вопрос")
+    private DocumentQuestionDto question;
+
+    @Schema(description = "Докладчик")
+    private UserInfoDto employee;
+
+    @Column(name = "type")
+    @NotNull
+    @Enumerated(EnumType.STRING)
+    private SpeakerType type;
+
+    public SpeakerDto() {
+    }
+
+public enum SpeakerType {
+
+    SPEAKER("SPEAKER"),
+    CO_REPORTER("CO_REPORTER");
+
+    private String type;
+
+    SpeakerType(String type) {
+        this.type = type;
+    }
+
+    public String getType() {
+        return type;
+    }
+}
+
+public class MiniUserInfoDto {
+
+    @Schema(description = "Имя сотрудника")
+    private String firstName;
+    @Schema(description = "Фамилия сотрудника")
+    private String lastName;
+    @Schema(description = "Отчество сотрудника")
+    private String middleName;
+    @Schema(description = "ИД сотрудника")
+    private UUID id;
+
+    public MiniUserInfoDto() {
+    }
+
+/**
+ * DTO Модель для описания "лист ознакомления".
+ */
+public class IntroductionDto {
+
+    @Schema(description = "Идентификатор листа ознакомления")
+    private UUID id;
+    @Schema(description = "Дата создания ознакомления")
+    private Instant createDate;
+    @Schema(description = "Автор создания ознакомления")
+    private UserInfoDto author;
+    @Schema(description = "Идентификатор документа")
+    private UUID documentId;
+    @Schema(description = "Дата ознакомления")
+    private Instant introductionDate;
+    @Schema(description = "Сотрудник который проставил отметку об ознакомлении")
+    private UserInfoDto introductionStamp;
+    @Schema(description = "Комментарий при постановке на ознакомление")
+    private String comment;
+
+    public IntroductionDto() {
+    }
+
+public class AutoControl {
+
+    /** Автоматически ставить на контроль после регистации */
+    private Boolean autoControl;
+
+    /** Кол-во дней контроля */
+    private Long controlDays;
+
+    private UUID controlTypeId;
+
+    private String controlTypeOrgId;
+
+    public AutoControl() {
+    }
+
+public class DocumentAppealDto {
+
+    @Schema(description = "Идентификатор страны заявителя")
+    private UUID countryAppealId;
+
+    @Schema(description = "Наименование страны заявителя")
+    @Column(name = "country_appeal_name")
+    private String countryAppealName;
+
+    @Schema(description = "Содержит дату поступления")
+    private Instant receiptDate;
+
+    @Schema(description = "Признак, является заявитель физическим или юридическим лицом")
+    private DeclarantType declarantType;
+
+    @Schema(description = "Идентификатор вида обращения")
+    private UUID citizenTypeId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации вида обращения")
+    private String citizenTypeOrgId;
+
+    private CitizenTypeDto citizenType;
+
+    @Schema(description = "Признак коллективного обращения")
+    private Boolean collective;
+
+    @Schema(description = "Признак анонимного обращения")
+    private Boolean anonymous;
+
+    @Schema(description = "Содержит Ф.И.О. заявителя")
+    private String fioApplicant;
+
+    @Schema(description = "Идентификатор города")
+    private UUID cityId;
+
+    @Schema(description = "Город")
+    private String cityName;
+
+    @Schema(description = "Идентификатор области")
+    private UUID regionId;
+
+    @Schema(description = "Область")
+    private String regionName;
+
+    @Schema(description = "Идентификатор района")
+    private UUID districtId;
+
+    @Schema(description = "Район")
+    private String districtName;
+
+//    @Schema(description = "Город")
+//    private String cityAddress;
+
+    @Schema(description = "Индекс")
+    private String index;
+
+    @Schema(description = "Содержит улицу, дом, корпус, квартиру")
+    private String fullAddress;
+
+    @Schema(description = "Контактный телефон")
+    private String phone;
+
+    @Schema(description = "e-mail заявителя")
+    private String email;
+
+    @Schema(description = "Содержит наименование организации-заявителя")
+    private String organizationName;
+
+    @Schema(description = "Содержит Ф.И.О. лица, подписавшего документ")
+    private String signed;
+
+    @Schema(description = "Содержит исходящий регистрационный индекс, присвоенный документу организацией-корреспондентом")
+    private String correspondentOrgNumber;
+
+    @Schema(description = "Содержит дату присвоения организацией-корреспондентом документу исходящего регистрационного номера")
+    private Instant dateDocCorrespondentOrg;
+
+    @Schema(description = "Идентификатор тематики")
+    private UUID subjectId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации тематики")
+    private String subjectOrgId;
+
+    private SubjectDto subject;
+
+    @Schema(description = "Заполняется, если обращение в ГТБ переслала другая организация, куда оно поступило первоначально (адресаты/корреспонденты)")
+    private String correspondentAppeal;
+
+    @Schema
+    private UUID correspondentAppealId;
+
+    @Schema(description = "Дата и индекс сопроводительного письма")
+    private String indexDateCoverLetter;
+
+    @Schema(description = "Повторные и идентичные обращения")
+    private List<RepeatIdenticalAppealDto> repeatIdenticalAppeals;
+
+    @Schema(description = "Ход рассмотрения")
+    private String reviewProgress;
+
+    @Schema(description = "Идентификатор результата решения")
+    private UUID solutionResultId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации результата решения")
+    private String solutionResultOrgId;
+
+    private SolutionResultDto solutionResult;
+
+    @Schema(description = "Идентификатор результата решения")
+    private UUID nomenclatureAffairId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации результата решения")
+    private String nomenclatureAffairOrgId;
+
+    private NomenclatureAffairDto nomenclatureAffair;
+    private Boolean reasonably;
+
+    public UUID getCorrespondentAppealId() {
+        return correspondentAppealId;
+    }
+
+    public DocumentAppealDto setCorrespondentAppealId(UUID correspondentAppealId) {
+        this.correspondentAppealId = correspondentAppealId;
+        return this;
+    }
+
+/**
+ * DTO Модель для описания номенклатуры дел
+ */
+public class NomenclatureAffairDto {
+
+    @Schema(description = "Идентификатор номенклатуры дел")
+    private UUID id;
+
+    @Schema(description = "Внешний идентификатор")
+    private String externalId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации номенклатуры дел")
+    private String organizationId;
+
+    @Schema(description = "Статус дела")
+    private NomenclatureAffairStatus status;
+
+    @Schema(description = "Тип создания")
+    private NomenclatureCreateType createType;
+
+    @Schema(description = "Календарный год")
+    private Integer calendarYear;
+
+    @Schema(description = "Признак,является ли дело переходящим")
+    private Boolean transitionalAffair;
+
+    @Schema(description = "Дата начала комплектования")
+    private Instant collectingStart;
+
+    @Schema(description = "Дата окончания комплектования")
+    private Instant collectingEnd;
+
+    @Schema(description = "Признак, является ли дело делом по личному составу")
+    private Boolean personnel;
+
+    @Schema(description = "Признак активна ли номенклатура дел")
+    private Boolean active;
+
+    @Schema(description = "Идентификатор департамента")
+    private UUID departmentId;
+
+    @Schema(description = "Департамент")
+    private DepartmentDto department;
+
+    @Schema(description = "Наименование номенклатуры дел")
+    private String name;
+
+    @Schema(description = "Индекс номенклатуры дел")
+    private String index;
+
+    @Schema(description = "Идентификатор срока хранения")
+    private UUID storagePeriodId;
+
+    @Schema(description = "Срок хранения")
+    private StoragePeriodDto period;
+
+    @Schema(description = "Номер статьи - Хранит информацию о номере статье в Перечне")
+    private String articleNumber;
+
+    @Schema(description = "Место хранения - Хранит информацию о месте хранения дела")
+    private String storagePlace;
+
+    @Schema(description = "Примечание - хранит произвольный текст с примечанием")
+    private String note;
+
+    @Schema(description = "Файл отчета")
+    private AttachmentDto attachment;
+
+    @Schema(description = "Цепочка подразделений")
+    private List<NomenclatureDepartmentPath> departmentPath;
+
+    @Schema(description = "метка списания документа в дело")
+    private Boolean writeOff;
+
+    @Schema(description = "Кол-во доков в деле")
+    private Long docCounter;
+
+    private InnerInventoryDataDto innerInventoryData;
+
+    @Schema(description = "Дата окончания хранения")
+    private Integer expirationDate;
+
+    @Schema(description = "Способ комплектования дела")
+    private MethodAssemblyType methodAssemblyType;
+
+    @Schema(description = "Признак экспертизы дела")
+    private ExpertiseType expertiseType;
+
+    @Schema(description = "Признак, показывающий, что дело находится на экспертизе")
+    private boolean expertise = false;
+
+    private UUID documentClassesId;
+
+    private UnifiedDocumentationSystemDto documentClasses;
+
+    @Schema(description = "Количество листов в деле")
+    private Integer countSheets;
+
+    @Schema(description = "Числовое значение номера тома (части дела)")
+    private Integer numberPagesPerVolume;
+
+    @Schema(description = "Файл Обложки дела")
+    private AttachmentDto caseFileCover;
+
+    @Schema(description = "лист заверитель")
+    private AttachmentDto certificationSheet;
+
+    @Schema(description = "Идентификатор СП")
+    private UUID acceptanceInventoryId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации СП")
+    private String acceptanceInventoryOrgId;
+
+    @Schema(description = "СП")
+    private AcceptanceInventoryDataDto acceptanceInventory;
+
+    @Schema(description = "Включено в внутреннюю опись НЦЭУ")
+    private boolean hasInner;
+
+    @Schema(description = "Включено в внутреннюю опись архив СЭД")
+    private boolean hasInnerArchive;
+
+    @Schema(description = "Дата поступления дела в архив ")
+    private Instant archiveDate;
+
+    @Schema(description = "Ф.И.О и должность Архивиста, который принял дело по описи")
+    private UserInfoDto whoAccepted;
+
+    @Schema(description = "Идентификатор фонда")
+    private UUID fundId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации фонда")
+    private String fundOrgId;
+
+    @Schema(description = "Фонд")
+    private ArchiveFundDto fund;
+
+    @Schema(description = "Идентификатор полки/стелажи")
+    private UUID shelvingShelveId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации полки/стелажи")
+    private String shelvingShelveOrgId;
+
+    @Schema(description = "Полки/стелажи")
+    private NomenclatureShelvingShelveDto shelvingShelve;
+
+    private String information;
+
+    private UUID caseFileCoverId;
+    private UUID certificationSheetId;
+    private List<DestructionActDto> destructionActs;
+
+    @Schema(description = "Объем документов в деле")
+    private long documentSize;
+
+    @Schema(description = "контрольная характеристика файлов документов")
+    private String hashED;
+
+    @Schema(description = "Список ЭЦП вложения")
+    private List<AttachmentSignature> signs;
+
+    @Schema(description = "Метка о присвоении статуса COMPLETED")
+    private boolean completed = false;
+
+    public NomenclatureAffairDto() {
+    }
+
+public enum NomenclatureCreateType {
+
+    MANUAL("MANUAL"),
+    DIRECTUM("DIRECTUM");
+
+    private String type;
+
+    NomenclatureCreateType(String type) {
+        this.type = type;
+    }
+
+    public String getType() {
+        return type;
+    }
+}
+
+/**
+ * DTO Модель для описания сроков хранения
+ */
+public class StoragePeriodDto {
+
+    @Schema(description = "Идентификатор срока хранения")
+    private UUID id;
+
+    @JsonIgnore
+    private String organizationId;
+
+    @Schema(description = "Наименование срока хранения")
+    private String name;
+
+    private GroupsByStoragePeriod groupByStoragePeriod;
+
+    @Schema(description = "Признак активен ли срок хранения")
+    private Boolean active;
+
+    private Instant createDate;
+
+    @Schema(description = "Признак - по личному составу")
+    private boolean byStaff;
+
+    @Schema(description = "Срок хранения дела в годах")
+    private Integer storageYears;
+
+    @Schema(description = "Добавочный текст к количеству лет хранения")
+    private YearPostfix yearPostfix;
+
+    @Schema(description = "Другой тип хранения")
+    private StoragePeriodType storagePeriodType;
+
+    public StoragePeriodDto() {
+    }
+
+public enum GroupsByStoragePeriod {
+
+    S_T_UP_TO_10_Y, // Время хранения до 10 лет
+    S_T_OVER_10_Y,  // Время хранения свыше 10 лет
+    P_S,            // Постоянное хранение
+//    BY_STAFF        // По личному составу
+
+}
+
+public enum YearPostfix {
+
+    YEAR("год"),
+    YEARS("года"),
+    YEARS_PLURAL("лет");
+
+    private final String name;
+
+    YearPostfix(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    @Override
+    public String toString() {
+        return name;
+    }
+
+}
+
+public enum StoragePeriodType {
+
+    NUMERIC("Числовой"),
+    PERMANENT("Постоянно"),
+    UNTIL_NEEDED("До минования надобности"),
+    UNTIL_REPLACED("До замены новыми");
+
+    private final String name;
+
+    StoragePeriodType(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    @Override
+    public String toString() {
+        return name;
+    }
+
+}
+
+/**
+ * Модель описания полного пути подразделений в делах
+ */
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class NomenclatureDepartmentPath implements Serializable {
+
+    private static final long serialVersionUID = -1L;
+
+    private Integer order;
+    private DepartmentDto department;
+
+    public NomenclatureDepartmentPath() {
+    }
+
+public class InnerInventoryDataDto {
+
+    private UUID id;
+    @JsonIgnore
+    private String organizationId;
+    private int countDoc;
+    private int countFile;
+    private long countVolumeDoc;
+    private InnerInventoryResponse dataDispatch;
+    private JobStatus status;
+    private Instant conversionEndDate;
+    private Instant dispatchEndDate;
+    private UUID idPackage;
+    private Instant createDate;
+    private UUID acceptanceId;
+    @JsonIgnore
+    private String acceptanceOrgId;
+    private AcceptanceInventoryDataDto acceptanceInventoryData;
+    private String indexInInventory;
+    private StoreAttribute storeAttribute;
+    private List<DocumentInventoryDataDto> documentInventories;
+    private NomenclatureAffairDto nomenclatureAffair;
+    private InnerInventoryRequest dataConversion;
+    private Signature signature;
+    private int calendarYear;
+
+    public InnerInventoryDataDto() {
+    }
+
+public enum JobStatus {
+    NEW,
+    AWAITING_CONVERSION,
+    READY, // Оправлено на формирование вн. описи и описи документов
+    IN_WORK_CONVERSION, // Формируется вн. опись и опись документов
+    COMPLETED, // Сформирована вн. опись и опись документов
+    SIGNED, // Подписано
+    DISPATCH, // Оправлено на отправку
+    IN_WORK_DISPATCH, // В процессе отправки
+    SENT, // Оправлено
+    ERROR_CONVERSION,
+    ERROR_DISPATCH
+}
+
+public class AcceptanceInventoryDataDto {
+
+    private UUID id;
+    @JsonIgnore
+    private String organizationId;
+    private String description;
+    private String title;
+
+    /**
+     * PERMANENT – постоянное хранение;
+     * TEMPORARY – временное хранение (> 10 лет);
+     * END_OF_NEED – временное хранение (≤ 10 лет);
+     * BY_STAFF – по личному составу.
+     */
+    private StoreAttribute storeAttribute;
+    private UUID departmentId;
+    @JsonIgnore
+    private String departmentOrgId;
+    private DepartmentDto department;
+    private SaveInventoryResponse dataDispatch;
+    private Instant conversionEndDate;
+    private JobStatus jobStatus;
+    private AcceptanceInventoryStatus status;
+    private Instant dispatchEndDate;
+    private UUID idPackage;
+    private String invIndex;
+    private String index;
+    private Instant createDate;
+    private Instant date;
+    private JobInfo dispatchJobInfo;
+    private List<InnerInventoryDataDto> innerInventories;
+    private Signature signature;
+    private int calendarYear;
+    private boolean byStaff;
+    private UserInfoDto author;
+    private MethodAssemblyType methodAssemblyType;
+    private Instant toArchiveDate;
+
+    @Schema(description = "Идентификатор процесса")
+    private UUID processId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации процесса")
+    private String processOrgId;
+
+    @Schema(description = "Процесс СП")
+    private AcceptanceInventoryProcessDto process;
+
+    @Schema(description = "Дата отклонения/аннулирования")
+    private Instant rejectCancelDate;
+
+    private AttachmentDto inventoryAttachment;
+
+    @Schema(description = "Список ЭЦП вложения")
+    private List<AttachmentSignature> signs;
+
+    public AcceptanceInventoryDataDto() {
+    }
+
+public class AcceptanceInventoryProcessDto {
+
+    @Schema(description = "Идентификатор процесса")
+    private UUID id;
+    @JsonIgnore
+    private String organizationId;
+    @Schema(description = "Идентификатор текущего этапа процесса")
+    private UUID currentId;
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации текущего этапа процесса")
+    private String currentOrgId;
+    @Schema(description = "Текущий этап процесса")
+    private AcceptanceInventoryProcessItemDto current;
+    @Schema(description = "Идентификатор следующего этапа процесса")
+    private UUID nextId;
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации следующего этапа процесса")
+    private String nextOrgId;
+    @Schema(description = "Следующий этап процесса")
+    private AcceptanceInventoryProcessItemDto next;
+    @Schema(description = "Идентификатор номенклатуры дел подразделения")
+    private UUID acceptanceInventoryId;
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации номенклатуры дел подразделения")
+    private String acceptanceInventoryOrgId;
+    @Schema(description = "СП")
+    private AcceptanceInventoryDataDto acceptanceInventory;
+    @Schema(description = "Список этапов процесса")
+    private List<AcceptanceInventoryProcessItemDto> items;
+    @Schema(description = "Признак прошел ли документ все этапы")
+    private Boolean completed;
+    @Schema(description = "Признак начал ли документ движение по маршруту")
+    private Boolean started;
+    @Schema(description = "Количество этапов в процессе")
+    private Integer stepCount;
+
+    public AcceptanceInventoryProcessDto() {
+    }
+
+public class DocumentResponsibleExecutorDto {
+
+    @Schema(description = "Идентификатор исполнителя процесса в документе")
+    private UUID id;
+
+    @Schema(description = "Идентификатор документа")
+    private UUID documentId;
+
+    @Schema(description = "Документ")
+    private DocumentDto document;
+
+    @Schema(description = "Исполнитель")
+    private UserInfoDto executor;
+
+    public DocumentResponsibleExecutorDto() {
+    }
+
+/**
+ * DTO Модель для описания документа который лежит в номенклатуре дел
+ */
+public class DocumentPreNomenclatureDto {
+
+    @Schema(description = "Идентификатор документа который лежит в номенклатуре дел")
+    private UUID id;
+
+    @Schema(description = "Идентификатор документа")
+    private UUID documentId;
+
+    @Schema(description = "Документ")
+    private DocumentDto document;
+
+    @Schema(description = "Идентификатор номенклатуры дел")
+    private UUID nomenclatureAffairId;
+
+    @Schema(description = "Номенклатура дел")
+    private NomenclatureAffairDto nomenclatureAffair;
+
+    @Schema(description = "Метка списания документа в номенклатуру дела")
+    private Boolean writeOff;
+    private Boolean deleted;
+
+    public DocumentPreNomenclatureDto() {
+    }
+
+public class DocumentUserPropsDto  {
+
+    private UUID documentId;
+    private UUID employeeId;
+    private Integer createTaskCount;
+    private Integer createTaskExecutedCount;
+
+    public DocumentUserPropsDto() {
+    }
+
+public class CurrencyDto {
+    @Schema(description = "Идентификатор валюты")
+    private UUID id;
+
+    @Schema(description = "Название валюты")
+    private String name;
+
+    @Schema(description = "Признак активна ли валюта")
+    private Boolean active;
+
+    private Instant createDate;
+
+    private String code;
+
+    public CurrencyDto() {
+    }
+
+public class DocumentInventoryDataDto {
+
+    private UUID id;
+    @JsonIgnore
+    private String organizationId;
+    private MiniDocumentDto miniDocument;
+    private UUID innerInventoryId;
+    @JsonIgnore
+    private String innerInventoryOrgId;
+    private PackageEoResponse dataDispatch;
+    private Instant createDate;
+    private String docHash;
+    private int numEDinArch; //Номер дока в деле
+    private UUID idPackage;
+    private int countFile = 1;
+    private JobStatus status;
+    private JobInfo dispatchJobInfo;
+
+    public DocumentInventoryDataDto() {
+    }
+
+@Schema(description = "DTO для мини-документа")
+public class MiniDocumentDto implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @Schema(description = "Идентификатор мини-документа")
+    private UUID id;
+
+    @JsonIgnore
+    private String organizationId;
+
+    @Schema(description = "Регистрационный номер")
+    private String regNumber;
+
+    @Schema(description = "Дата регистрации")
+    private Instant regDate;
+
+    @Schema(description = "Тип документа")
+    private DocumentCategoryConstants docCategoryConstant;
+
+    @Schema(description = "Краткое содержание")
+    private String shortSummary;
+
+    @Schema(description = "Идентификатор языка документа")
+    private UUID documentLanguageId;
+
+    @Schema(description = "Язык документа")
+    private DocumentLanguageDto documentLanguage;
+
+    @Schema(description = "Количество страниц")
+    private Integer pagesCount;
+
+    @Schema(description = "Начальная страница")
+    private Integer startPage;
+
+    @Schema(description = "Конечная страница")
+    private Integer endPage;
+
+    @Schema(description = "Размер документа")
+    private Long documentSize;
+
+    private UserInfoDto author;
+
+    @Schema(description = "Дата создания основного документа")
+    private Instant docCreateDate;
+
+    @Schema(description = "Дата создания")
+    private Instant createDate;
+
+    @Schema(description = "Дата изменения")
+    private Instant modifyDate;
+
+    @Schema(description = "Идентификатор основного документа")
+    private UUID documentId;
+
+    @JsonIgnore
+    private String documentOrganizationId;
+
+    @Schema(description = "Основной документ")
+    private DocumentDto document;
+
+    @Schema(description = "Вложения")
+    private List<MiniDocumentAttachmentDto> attachments = new ArrayList<>();
+
+    @Schema(description = "Номенклатурное дело")
+    private NomenclatureAffairDto nomenclatureAffair;
+
+    @Schema(description = "Идентификатор номенклатурного дела")
+    private UUID nomenclatureAffairId;
+
+    @JsonIgnore
+    private String nomenclatureAffairOrganizationId;
+
+    @Schema(description = "Опись документа")
+    private DocumentInventoryDataDto documentInventory;
+
+    @Schema(description = "Вид документа (Унифицированный код из окрб 010-95 таблица 1)")
+    private String objectType;
+
+    @Schema(description = "Дата подписания или утверждения документа")
+    private Instant sourceApproveTs;
+
+    @Schema(description = "Список ЭЦП вложения")
+    private List<AttachmentSignature> signs;
+
+    @Schema(description = "Числовое значение номера тома (части дела)")
+    private Integer numberPagesPerVolume;
+
+    @Schema(description = "контрольная характеристика файлов документа")
+    private String hashED;
+
+    @Schema(description = "Номер журнала регистрации при регистрации документа")
+    private Long journalNumber;
+
+    @Schema(description = "Дата регистрации без времени")
+    private LocalDate regDateWithoutTime;
+
+    @Schema(description = "Удалено на статусе архивное и должно отображаться в списке")
+    private boolean deleted;
+
+    @Schema(description = "Количество вложений")
+    private int attachmentCount;
+
+    public UUID getId() {
+        return id;
+    }
+
+    public MiniDocumentDto setId(UUID id) {
+        this.id = id;
+        return this;
+    }
+
+@Schema(description = "DTO для вложений мини-документа")
+public class MiniDocumentAttachmentDto implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @Schema(description = "Идентификатор вложения")
+    private UUID id;
+
+    @Schema(description = "Идентификатор мини-документа")
+    private UUID miniDocumentId;
+
+    @JsonIgnore
+    @Schema(description = "Идентификатор организации мини-документа")
+    private String miniDocumentOrganizationId;
+
+    @Schema(description = "Тип вложения")
+    private AttachmentDocumentType type;
+
+    private AttachmentDto attachment;
+
+    private ContentType contentType;
+
+    @Schema(description = "Дата загрузки")
+    private Instant uploadDate;
+
+    @Schema(description = "Список ЭЦП вложения")
+    private List<AttachmentSignature> signs;
+
+    @Schema(description = "Id вида дополнительного документа")
+    private UUID additionalDocumentTypeId;
+
+    @Schema(description = "Вид дополнительного документа")
+    private AdditionalDocumentTypeDto additionalDocumentType;
+
+    private UUID docAttachmentId;
+
+    private UUID additionalDocAttachmentId;
+
+    public UUID getId() {
+        return id;
+    }
+
+    public MiniDocumentAttachmentDto setId(UUID id) {
+        this.id = id;
+        return this;
+    }
+
+public enum ContentType {
+
+    /** Вложение формата doc */
+    DOC("DOC"),
+    /** Вложение формата docx */
+    DOCX("DOCX"),
+    /** Вложение формата tif */
+    TIF("TIF"),
+    /** Вложение формата tiff */
+    TIFF("TIFF"),
+    /** Вложение формата jpg */
+    JPG("JPG"),
+    /** Вложение формата jpeg */
+    JPEG("JPEG"),
+    /** Вложение формата bmp */
+    BMP("BMP"),
+    /** Вложение формата pdf */
+    PDF("PDF"),
+    /** Вложение формата gif */
+    GIF("GIF"),
+    /** Вложение формата png */
+    PNG("PNG"),
+    /** Вложение другого формата */
+    OTHER("OTHER");
+
+    private String name;
+
+    ContentType(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public static ContentType RecognitionFileTypestoContentType(RecognitionFileTypes value) {
+        return ContentType.valueOf(value.getName());
+    }
+}
+
+public class AdditionalDocumentTypeDto implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @Schema(description = "Идентификатор доп документов")
+    private UUID id;
+
+    @Schema(description = "Название доп документа")
+    private String name;
+
+    @Schema(description = "Признак активно ли до документ")
+    private Boolean active;
+
+    private Instant createDate;
+
+    public AdditionalDocumentTypeDto() {
+    }
+
+
+public class DocumentFormDefinitionDto {
+
+    @Schema(description = "Идентификатор определения формы документа")
+    private UUID id;
+
+    @Schema(description = "Общие настройки формы")
+    private Map<String, Object> general;
+
+    @Schema(description = "Поля формы документа")
+    private List<DocumentFormField> fields;
+
+    public DocumentFormDefinitionDto() {
+    }
+
+public class DocumentFormField implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    private String id;
+    private Map<String, Object> payload;
+
+    public DocumentFormField() {
+    }
+
+public class AdditionalDocumentDto {
+
+    private UUID id;
+    @JsonIgnore
+    private String organizationId;
+    private UUID documentId;
+    @JsonIgnore
+    private String documentOrgId;
+    private UUID additionalDocumentTypeId;
+    private AdditionalDocumentTypeDto additionalDocumentType;
+    private UUID parentId;
+    @JsonIgnore
+    private String parentOrgId;
+    private AdditionalDocumentDto parent;
+    private List<AdditionalDocumentAttachmentDto> attachments;
+    private List<AdditionalDocumentResponsibleDto> responsibles;
+    private Instant date;
+    private String docNumber;
+    private UserInfoDto author;
+    private String note;
+    private Instant createDate;
+
+    public AdditionalDocumentDto() {
+    }
+
+public class AdditionalDocumentTypeDto implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @Schema(description = "Идентификатор доп документов")
+    private UUID id;
+
+    @Schema(description = "Название доп документа")
+    private String name;
+
+    @Schema(description = "Признак активно ли до документ")
+    private Boolean active;
+
+    private Instant createDate;
+
+    public AdditionalDocumentTypeDto() {
+    }
+
+public class AdditionalDocumentAttachmentDto {
+
+    private UUID id;
+    private AttachmentDto attachment;
+    private UUID additionalDocumentId;
+    @JsonIgnore
+    private String additionalDocumentOrgId;
+    private AdditionalDocumentDto additionalDocument;
+    private UUID documentId;
+    @JsonIgnore
+    private String documentOrgId;
+    private Instant createDate;
+
+    public AdditionalDocumentAttachmentDto() {
+    }
+
+public class AdditionalDocumentResponsibleDto {
+
+    private UUID id;
+    private UUID additionalDocumentId;
+    @JsonIgnore
+    private String additionalDocumentOrgId;
+    private UserInfoDto user;
+    private Instant createDate;
+
+    public AdditionalDocumentResponsibleDto() {
+    }
+

@@ -1,0 +1,1 @@
+# src\ai_edms_assistant\infrastructure\nlp\extractors\base_extractor.py
