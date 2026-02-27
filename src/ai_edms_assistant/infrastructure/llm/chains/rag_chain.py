@@ -23,10 +23,10 @@ class RAGChain:
     """
 
     def __init__(
-            self,
-            llm: BaseChatModel,
-            vector_store: AbstractVectorStore,
-            top_k: int = 5,
+        self,
+        llm: BaseChatModel,
+        vector_store: AbstractVectorStore,
+        top_k: int = 5,
     ):
         """Initialize RAG chain.
 
@@ -46,7 +46,6 @@ class RAGChain:
         Returns:
             Runnable LCEL chain.
         """
-        # Define prompt template
         prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -62,15 +61,14 @@ class RAGChain:
             ]
         )
 
-        # Build chain
         chain = prompt | self._llm | StrOutputParser()
         return chain
 
     async def arun(
-            self,
-            query: str,
-            document_id: str | None = None,
-            collection_name: str = "default",
+        self,
+        query: str,
+        document_id: str | None = None,
+        collection_name: str = "default",
     ) -> str:
         """Run RAG chain asynchronously.
 
@@ -91,10 +89,8 @@ class RAGChain:
             filter_metadata=filter_metadata,
         )
 
-        # 2. Format context
         context = self._format_context(results)
 
-        # 3. Generate answer
         answer = await self._chain.ainvoke(
             {
                 "context": context,

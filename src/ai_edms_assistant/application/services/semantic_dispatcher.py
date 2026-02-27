@@ -1,5 +1,6 @@
 # src/ai_edms_assistant/application/services/semantic_dispatcher.py
 """Semantic dispatcher for intent classification and query analysis."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from ...domain.entities.document import Document
 
 class UserIntent(StrEnum):
     """User intent types."""
+
     CREATE_TASK = "create_task"
     CREATE_INTRODUCTION = "create_introduction"
     SUMMARIZE = "summarize"
@@ -22,6 +24,7 @@ class UserIntent(StrEnum):
 
 class QueryComplexity(StrEnum):
     """Query complexity levels."""
+
     SIMPLE = "simple"
     MEDIUM = "medium"
     COMPLEX = "complex"
@@ -30,6 +33,7 @@ class QueryComplexity(StrEnum):
 @dataclass
 class QueryAnalysis:
     """Analyzed user query."""
+
     original: str
     refined: str
     intent: UserIntent
@@ -40,6 +44,7 @@ class QueryAnalysis:
 @dataclass
 class SemanticContext:
     """Semantic context for agent execution."""
+
     query: QueryAnalysis
     document: Document | None = None
 
@@ -55,7 +60,9 @@ class SemanticDispatcher:
         UserIntent.SEARCH: ["найди", "поиск", "покажи"],
     }
 
-    def build_context(self, message: str, document: Document | None = None) -> SemanticContext:
+    def build_context(
+        self, message: str, document: Document | None = None
+    ) -> SemanticContext:
         """Build semantic context from user message."""
         message_lower = message.lower()
 
@@ -66,12 +73,11 @@ class SemanticDispatcher:
                 intent = i
                 break
 
-        # Determine complexity
         word_count = len(message.split())
         complexity = (
-            QueryComplexity.COMPLEX if word_count > 20
-            else QueryComplexity.MEDIUM if word_count > 10
-            else QueryComplexity.SIMPLE
+            QueryComplexity.COMPLEX
+            if word_count > 20
+            else QueryComplexity.MEDIUM if word_count > 10 else QueryComplexity.SIMPLE
         )
 
         return SemanticContext(

@@ -17,12 +17,21 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentMapper:
-    """FULL mapper: EDMS DocumentDto → domain Document (120+ fields)."""
+    """EDMS DocumentDto → domain Document."""
 
     @staticmethod
     def from_dto(data: dict[str, Any]) -> Document:
-        """Map complete DocumentDto to domain Document."""
+        """Map complete DocumentDto to domain Document.
 
+        Args:
+            data: Raw dict from EDMS API.
+
+        Returns:
+            Populated domain Document entity.
+
+        Raises:
+            KeyError: When mandatory ``id`` field is absent.
+        """
         # ── Parse enums ────────────────────────────────────────────────
         status = DocumentMapper._parse_enum(
             data.get("state") or data.get("status"), DocumentStatus
@@ -40,7 +49,17 @@ class DocumentMapper:
         appeal_raw = data.get("documentAppeal")
         appeal: DocumentAppeal | None = None
         if appeal_raw and isinstance(appeal_raw, dict):
-            appeal = DocumentMapper._map_appeal(appeal_raw)
+            try:
+                appeal = DocumentMapper._map_appeal(appeal_raw)
+            except Exception as exc:
+                logger.warning(
+                    "document_appeal_map_failed",
+                    extra={
+                        "error": str(exc),
+                        "document_id": data.get("id"),
+                        "appeal_id": appeal_raw.get("id"),
+                    },
+                )
 
         # ── Parse user references ──────────────────────────────────────
         author = EmployeeMapper.to_user_info(data.get("author"))
@@ -51,9 +70,9 @@ class DocumentMapper:
         chairperson = EmployeeMapper.to_user_info(data.get("chairperson"))
         secretary = EmployeeMapper.to_user_info(data.get("secretary"))
 
-        # ── Parse who_addressed (signed by) ───────────────────────────
+        # ── Parse who_addressed ────────────────────────────────────────
         who_addressed = []
-        for item in data.get("whoAddressed", []):
+        for item in data.get("whoAddressed", []) or []:
             u = EmployeeMapper.to_user_info(item)
             if u:
                 who_addressed.append(u)
@@ -71,9 +90,16 @@ class DocumentMapper:
         end_meeting = DocumentMapper._parse_datetime(data.get("endMeeting"))
         date_question = DocumentMapper._parse_datetime(data.get("dateQuestion"))
 
+        doc_id = DocumentMapper._safe_uuid(data.get("id"))
+        if doc_id is None:
+            raise ValueError(
+                f"Document DTO missing required 'id' field. "
+                f"Keys present: {list(data.keys())[:10]}"
+            )
+
         return Document(
             # ── Identity ───────────────────────────────────────────────
-            id=UUID(data["id"]),
+            id=doc_id,
             organization_id=data.get("organizationId"),
             # ── Status & Category ──────────────────────────────────────
             status=status,
@@ -170,9 +196,16 @@ class DocumentMapper:
 
     @staticmethod
     def _map_appeal(data: dict[str, Any]) -> DocumentAppeal:
-        """Map DocumentAppealDto to domain DocumentAppeal."""
+        """Map DocumentAppealDto to domain DocumentAppeal.
+
+        Args:
+            data: Raw appeal dict from API.
+
+        Returns:
+            DocumentAppeal entity.
+        """
         return DocumentAppeal(
-            id=UUID(data["id"]) if data.get("id") else None,
+            id=DocumentMapper._safe_uuid(data.get("id")),
             appeal_number=data.get("appealNumber"),
             applicant_name=data.get("fioApplicant"),
             description=data.get("description"),
@@ -196,7 +229,14 @@ class DocumentMapper:
 
     @staticmethod
     def _parse_datetime(raw: str | int | float | None):
-        """Parse ISO string or Java timestamp."""
+        """Parse ISO string or Java timestamp (milliseconds).
+
+        Args:
+            raw: ISO 8601 string, Unix ms timestamp, or None.
+
+        Returns:
+            datetime or None.
+        """
         if not raw:
             return None
         from datetime import datetime
@@ -211,7 +251,14 @@ class DocumentMapper:
 
     @staticmethod
     def _safe_uuid(raw: Any) -> UUID | None:
-        """Parse UUID with None fallback."""
+        """Parse UUID with None fallback.
+
+        Args:
+            raw: Any value — UUID string, UUID object, or None.
+
+        Returns:
+            UUID or None if parsing fails.
+        """
         if not raw:
             return None
         try:
@@ -221,7 +268,15 @@ class DocumentMapper:
 
     @staticmethod
     def _parse_enum(raw: str | None, enum_class: type):
-        """Generic enum parser."""
+        """Generic enum parser with None fallback.
+
+        Args:
+            raw: Raw string value from API.
+            enum_class: Target enum class.
+
+        Returns:
+            Enum value or None if parsing fails.
+        """
         if not raw:
             return None
         try:
@@ -232,18 +287,38 @@ class DocumentMapper:
 
     @staticmethod
     def _parse_status(raw: str | None):
-        """Legacy status parser."""
+        """Legacy status parser — delegates to _parse_enum.
+
+        Args:
+            raw: Raw status string.
+
+        Returns:
+            DocumentStatus or None.
+        """
         return DocumentMapper._parse_enum(raw, DocumentStatus)
 
     @staticmethod
-    def from_dto_list(items: list[dict[str, Any]]) -> list[Document]:
-        """Map list, skip malformed."""
+    def from_dto_list(items: list[dict[str, Any]] | None) -> list[Document]:
+        """Map list of DocumentDto dicts, skipping malformed items.
+
+        Args:
+            items: List of document dicts. Accepts None (Java API compat).
+
+        Returns:
+            List of successfully mapped domain Document entities.
+        """
         result: list[Document] = []
         for item in items or []:
+            if not isinstance(item, dict):
+                continue
             try:
                 result.append(DocumentMapper.from_dto(item))
             except (KeyError, ValueError) as exc:
                 logger.warning(
-                    f"document_mapper_skip: {exc}, item_id: {item.get('id')}"
+                    "document_mapper_skip",
+                    extra={
+                        "error": str(exc),
+                        "item_id": item.get("id"),
+                    },
                 )
         return result

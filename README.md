@@ -16,6 +16,10 @@ uv sync --group dev
 
 black src/ai_edms_assistant/
 
+curl http://model-generative.shared.du.iba/v1/models
+
+dir /s /b D:\project\ai-edms-assistant\src   
+
 
 
 

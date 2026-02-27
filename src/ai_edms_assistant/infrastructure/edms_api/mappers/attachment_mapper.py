@@ -41,8 +41,12 @@ class AttachmentMapper:
         hashED → content_hash
     """
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def from_dto(data: dict[str, Any]) -> Attachment:
+    def from_dto(data: dict[str, Any] | None) -> Attachment:
         """Map a single AttachmentDto dict to domain Attachment.
 
         Args:
@@ -50,21 +54,27 @@ class AttachmentMapper:
                   - AttachmentDocumentDto (wrapper with "attachment" key)
                   - Standalone AttachmentDto
                   - MiniDocumentAttachmentDto variant
+                  - None (raises ValueError immediately)
 
         Returns:
             Populated domain Attachment entity.
 
         Raises:
+            ValueError: When ``data`` is None or not a dict.
             KeyError: When mandatory ``id`` field is absent.
-            ValueError: When enum parsing fails for critical fields.
         """
-        # AttachmentDocumentDto wraps the real attachment under "attachment" key
-        # MiniDocumentAttachmentDto also uses "attachment" wrapper
-        raw = data.get("attachment") or data
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"AttachmentMapper.from_dto expects dict, got {type(data).__name__}"
+            )
+
+        raw: dict[str, Any] = (
+            AttachmentMapper._safe_dict(data.get("attachment")) or data
+        )
 
         # ── Parse attachment type enum ────────────────────────────────────────
         type_raw = raw.get("type") or raw.get("attachmentType")
-        attachment_type = AttachmentType.ATTACHMENT  # default
+        attachment_type: AttachmentType | None = None
         if type_raw:
             try:
                 attachment_type = AttachmentType(type_raw)
@@ -73,13 +83,16 @@ class AttachmentMapper:
                     "unknown_attachment_type",
                     extra={
                         "type_value": type_raw,
+                        "known_values": [e.value for e in AttachmentType],
                         "attachment_id": raw.get("id"),
                     },
                 )
 
         # ── Parse attachment document type enum ───────────────────────────────
-        doc_type_raw = data.get("attachmentDocumentType") or raw.get(
-            "attachmentDocumentType"
+        doc_type_raw = (
+            data.get("attachmentDocumentType")
+            or raw.get("attachmentDocumentType")
+            or (data.get("type") if "attachment" in data else None)
         )
         attachment_document_type: AttachmentDocumentType | None = None
         if doc_type_raw:
@@ -87,7 +100,8 @@ class AttachmentMapper:
                 attachment_document_type = AttachmentDocumentType(doc_type_raw)
             except ValueError:
                 logger.warning(
-                    "unknown_attachment_document_type",
+                    f"unknown_attachment_document_type [{doc_type_raw}] "
+                    f"known={[e.value for e in AttachmentDocumentType]}",
                     extra={
                         "type_value": doc_type_raw,
                         "attachment_id": raw.get("id"),
@@ -108,7 +122,13 @@ class AttachmentMapper:
 
         # ── Parse signatures ──────────────────────────────────────────────────
         signs: list[AttachmentSignature] = []
-        for sig_raw in raw.get("signs", []):
+        for sig_raw in AttachmentMapper._safe_list(raw.get("signs")):
+            if not isinstance(sig_raw, dict):
+                logger.debug(
+                    "attachment_signature_null_item",
+                    extra={"attachment_id": raw.get("id")},
+                )
+                continue
             try:
                 signs.append(AttachmentMapper._map_signature(sig_raw))
             except (KeyError, ValueError) as exc:
@@ -178,6 +198,87 @@ class AttachmentMapper:
         )
 
     @staticmethod
+    def from_dto_list(items: list[dict[str, Any]] | None) -> list[Attachment]:
+        """Map a list of attachment DTO dicts, skipping malformed items.
+
+        Args:
+            items: List of attachment dicts from API response.
+                   Accepts ``None`` (returns empty list — Java API compat).
+
+        Returns:
+            List of successfully mapped domain Attachment entities.
+            Logs warnings for skipped items.
+        """
+        result: list[Attachment] = []
+
+        for item in AttachmentMapper._safe_list(items):
+            if not isinstance(item, dict):
+                logger.debug(
+                    "attachment_list_null_item",
+                    extra={"item_type": type(item).__name__},
+                )
+                continue
+            try:
+                result.append(AttachmentMapper.from_dto(item))
+            except (KeyError, ValueError) as exc:
+                logger.warning(
+                    "attachment_mapper_skip",
+                    extra={
+                        "error": str(exc),
+                        "item_id": item.get("id"),
+                    },
+                )
+        return result
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_list(value: Any) -> list:
+        """Normalise any value to a list, treating None/non-list as empty.
+
+        Designed specifically for Java API responses where collection fields
+        may be ``null`` instead of ``[]``.
+
+        Args:
+            value: Any value from API response.
+
+        Returns:
+            Original list if value is a list, otherwise empty list.
+
+        Examples:
+            >>> AttachmentMapper._safe_list(None)
+            []
+            >>> AttachmentMapper._safe_list([1, 2])
+            [1, 2]
+            >>> AttachmentMapper._safe_list("oops")
+            []
+        """
+        if isinstance(value, list):
+            return value
+        if value is not None:
+            logger.debug(
+                "safe_list_unexpected_type",
+                extra={"type": type(value).__name__, "value_preview": str(value)[:50]},
+            )
+        return []
+
+    @staticmethod
+    def _safe_dict(value: Any) -> dict | None:
+        """Return value if it is a non-empty dict, otherwise None.
+
+        Args:
+            value: Any value from API response.
+
+        Returns:
+            Original dict or None.
+        """
+        if isinstance(value, dict):
+            return value
+        return None
+
+    @staticmethod
     def _parse_datetime(raw: str | int | float | None) -> datetime | None:
         """Parse datetime from ISO string or Java timestamp (milliseconds).
 
@@ -191,10 +292,8 @@ class AttachmentMapper:
             return None
 
         try:
-            # ISO 8601 string
             if isinstance(raw, str):
                 return datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            # Java timestamp in milliseconds
             elif isinstance(raw, (int, float)):
                 return datetime.fromtimestamp(raw / 1000)
         except (ValueError, TypeError, OSError) as exc:
@@ -218,21 +317,14 @@ class AttachmentMapper:
         Returns:
             ContentType enum value.
         """
-        # ── Try MIME type first ───────────────────────────────────────────────
         if mime_type:
             mime_lower = mime_type.lower()
-
-            # PDF
             if "pdf" in mime_lower:
                 return ContentType.PDF
-
-            # Microsoft Word
             if "msword" in mime_lower or "wordprocessingml" in mime_lower:
                 if "openxmlformats" in mime_lower or "wordprocessingml" in mime_lower:
                     return ContentType.DOCX
                 return ContentType.DOC
-
-            # Images
             if "tiff" in mime_lower or "tif" in mime_lower:
                 return ContentType.TIFF
             if "jpeg" in mime_lower or "jpg" in mime_lower:
@@ -244,7 +336,6 @@ class AttachmentMapper:
             if "bmp" in mime_lower:
                 return ContentType.BMP
 
-        # ── Fallback to file extension ────────────────────────────────────────
         if "." not in file_name:
             return ContentType.OTHER
 
@@ -279,7 +370,6 @@ class AttachmentMapper:
         """
         sig_date = AttachmentMapper._parse_datetime(data.get("date"))
 
-        # Parse nested Signature object
         sign_raw = data.get("sign")
         signature: Signature | None = None
         if sign_raw and isinstance(sign_raw, dict):
@@ -304,28 +394,22 @@ class AttachmentMapper:
             Signature value object.
         """
         return Signature(
-            # ── Core signature data ───────────────────────────────────────────
-            data=data.get("data", ""),  # base64 signature, required
+            data=data.get("data", ""),
             key_id=data.get("keyId"),
             signer=data.get("signer"),
-            # ── Timestamps ────────────────────────────────────────────────────
             sign_time=AttachmentMapper._parse_datetime(data.get("signtime")),
             signer_date=AttachmentMapper._parse_datetime(data.get("signerDate")),
             start=AttachmentMapper._parse_datetime(data.get("start")),
             end=AttachmentMapper._parse_datetime(data.get("end")),
-            # ── Certificate info ──────────────────────────────────────────────
             cert_serial=data.get("certSerial"),
             issuer=data.get("issuer"),
-            # ── Signer info ───────────────────────────────────────────────────
             signer_fio=data.get("signerFio"),
             signer_post=data.get("signerPost"),
             signer_org=data.get("signerOrg"),
             personal_number=data.get("personalNumber"),
-            # ── Operation metadata ────────────────────────────────────────────
             operation_type=data.get("operationType"),
             orig_signature=data.get("origSignature"),
             sign_count=data.get("signCount"),
-            # ── Attribute certificate fields ──────────────────────────────────
             attr_cert_issuer=data.get("attrCertIssuer"),
             attr_cert_issuer_id=data.get("attrCertIssuerId"),
             attr_organization_name=data.get("attrOrganizationName"),
@@ -336,28 +420,3 @@ class AttachmentMapper:
             attr_start=AttachmentMapper._parse_datetime(data.get("attrStart")),
             attr_end=AttachmentMapper._parse_datetime(data.get("attrEnd")),
         )
-
-    @staticmethod
-    def from_dto_list(items: list[dict[str, Any]]) -> list[Attachment]:
-        """Map a list of attachment DTO dicts, skipping malformed items.
-
-        Args:
-            items: List of attachment dicts from API response.
-
-        Returns:
-            List of successfully mapped domain Attachment entities.
-            Logs warnings for skipped items.
-        """
-        result: list[Attachment] = []
-        for item in items or []:
-            try:
-                result.append(AttachmentMapper.from_dto(item))
-            except (KeyError, ValueError) as exc:
-                logger.warning(
-                    "attachment_mapper_skip",
-                    extra={
-                        "error": str(exc),
-                        "item_id": item.get("id") if isinstance(item, dict) else None,
-                    },
-                )
-        return result

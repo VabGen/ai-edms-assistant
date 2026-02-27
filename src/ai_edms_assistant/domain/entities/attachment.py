@@ -1,4 +1,13 @@
 # src/ai_edms_assistant/domain/entities/attachment.py
+"""Domain entities for EDMS document attachments.
+
+Java sources:
+    - AttachmentDocumentDto   → Attachment entity
+    - AttachmentType enum     → AttachmentType (роль файла в документе)
+    - AttachmentDocumentType  → AttachmentDocumentType (тип обёртки DTO)
+    - ContentType enum        → ContentType (формат файла)
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -15,20 +24,31 @@ from .base import DomainModel, MutableDomainModel
 
 
 class AttachmentType(StrEnum):
-    """Semantic role of a file within an EDMS document.
+    """Semantic role of a file within an EDMS document workflow.
 
-    Determines how the file participates in document workflows:
-    - ``ATTACHMENT`` — основной файл документа.
-    - ``PRINT_DOCUMENT`` — печатная форма (PDF-рендер).
-    - ``PROJECT_SOLUTION`` — проект решения.
-    - ``RATIONALE`` — обоснование.
-    - ``DOCUMENTS_QUESTION`` — материалы к вопросу повестки.
-    - ``INTRODUCTION_LIST`` — лист ознакомления.
-    - ``AGREEMENT_LIST`` — лист согласования.
-    - ``DECISION`` — решение.
-    - ``RKK`` — регистрационно-контрольная карточка.
+    Java enum ``AttachmentType`` has TWO variants depending on DTO context:
+
+    ``AttachmentDocumentDto.AttachmentType`` (used in document list responses):
+        - ``MAIN_ATTACHMENT``       — основной файл документа
+        - ``ADDITIONAL_ATTACHMENT`` — дополнительное вложение
+
+    Extended set (used in standalone attachment endpoints and MiniDoc):
+        - ``ATTACHMENT``            — общее вложение (generic)
+        - ``PRINT_DOCUMENT``        — печатная форма (PDF-рендер)
+        - ``PROJECT_SOLUTION``      — проект решения
+        - ``RATIONALE``             — обоснование
+        - ``DOCUMENTS_QUESTION``    — материалы к вопросу повестки
+        - ``INTRODUCTION_LIST``     — лист ознакомления
+        - ``AGREEMENT_LIST``        — лист согласования
+        - ``DECISION``              — решение
+        - ``RKK``                   — регистрационно-контрольная карточка
     """
 
+    # ── Java AttachmentDocumentDto.AttachmentType ─────────────────────────
+    MAIN_ATTACHMENT = "MAIN_ATTACHMENT"
+    ADDITIONAL_ATTACHMENT = "ADDITIONAL_ATTACHMENT"
+
+    # ── Extended / standalone endpoint variants ───────────────────────────
     ATTACHMENT = "ATTACHMENT"
     PRINT_DOCUMENT = "PRINT_DOCUMENT"
     PROJECT_SOLUTION = "PROJECT_SOLUTION"
@@ -41,9 +61,45 @@ class AttachmentType(StrEnum):
 
 
 class AttachmentDocumentType(StrEnum):
+    """Type discriminator for the DTO wrapper around an attachment.
+
+    Java enum ``AttachmentDocumentType`` — identifies which DTO variant
+    wraps the underlying file record.
+
+    Note:
+        Some API endpoints incorrectly place ``AttachmentType`` values
+        (e.g. ``ATTACHMENT``, ``PRINT_DOCUMENT``) into this field.
+        All known values from both enums are included here to avoid
+        ``unknown_attachment_document_type`` warnings.
+
+    Attributes:
+        DOCUMENT:             Стандартный документ-вложение.
+        MINI_DOCUMENT:        Мини-документ (вложенный реестровый документ).
+        ADDITIONAL_DOCUMENT:  Дополнительный документ.
+
+        # Значения AttachmentType, которые API иногда кладёт в это поле:
+        ATTACHMENT, PRINT_DOCUMENT, PROJECT_SOLUTION, RATIONALE,
+        DOCUMENTS_QUESTION, INTRODUCTION_LIST, AGREEMENT_LIST,
+        DECISION, RKK, MAIN_ATTACHMENT, ADDITIONAL_ATTACHMENT
+    """
+
+    # ── Основные значения AttachmentDocumentType ──────────────────────────
     DOCUMENT = "DOCUMENT"
     MINI_DOCUMENT = "MINI_DOCUMENT"
     ADDITIONAL_DOCUMENT = "ADDITIONAL_DOCUMENT"
+
+    # ── Значения AttachmentType, которые API кладёт в это поле ───────────
+    ATTACHMENT = "ATTACHMENT"
+    PRINT_DOCUMENT = "PRINT_DOCUMENT"
+    PROJECT_SOLUTION = "PROJECT_SOLUTION"
+    RATIONALE = "RATIONALE"
+    DOCUMENTS_QUESTION = "DOCUMENTS_QUESTION"
+    INTRODUCTION_LIST = "INTRODUCTION_LIST"
+    AGREEMENT_LIST = "AGREEMENT_LIST"
+    DECISION = "DECISION"
+    RKK = "RKK"
+    MAIN_ATTACHMENT = "MAIN_ATTACHMENT"
+    ADDITIONAL_ATTACHMENT = "ADDITIONAL_ATTACHMENT"
 
 
 class ContentType(StrEnum):
@@ -76,7 +132,29 @@ class ContentType(StrEnum):
 
 
 class Signature(DomainModel):
-    """Full signature data (вложен в AttachmentSignature)."""
+    """Full electronic signature data (ЭЦП).
+
+    Embedded within ``AttachmentSignature``. Contains cryptographic
+    metadata from the EDMS signing service.
+
+    Attributes:
+        data: Raw signature bytes (Base64-encoded).
+        key_id: Signing key identifier.
+        signer: Signer identifier string.
+        sign_time: Timestamp when signature was applied.
+        signer_date: Date from the signer's certificate.
+        start: Certificate validity start date.
+        end: Certificate validity end date.
+        cert_serial: Certificate serial number.
+        issuer: Certificate issuer DN string.
+        signer_fio: Full name of the signer (ФИО).
+        signer_post: Position/job title of the signer.
+        signer_org: Organisation name of the signer.
+        personal_number: Personal identification number.
+        operation_type: Type of signing operation.
+        orig_signature: Original signature reference.
+        sign_count: Number of signatures applied.
+    """
 
     data: str
     key_id: str | None = Field(default=None, alias="keyId")
@@ -94,7 +172,6 @@ class Signature(DomainModel):
     operation_type: str | None = Field(default=None, alias="operationType")
     orig_signature: str | None = Field(default=None, alias="origSignature")
     sign_count: int | None = Field(default=None, alias="signCount")
-    # TODO ... + attr_cert_* fields (еще ~10 полей)
 
 
 _TEXT_EXTRACTABLE_FORMATS: frozenset[ContentType] = frozenset(
@@ -123,6 +200,7 @@ class AttachmentSignature(DomainModel):
         id: Signature record UUID.
         date: Timestamp when the signature was applied.
         is_verified: Whether the signature has been cryptographically verified.
+        signature: Full signature cryptographic data.
     """
 
     id: UUID
@@ -149,17 +227,22 @@ class Attachment(MutableDomainModel):
 
     Attributes:
         id: Attachment UUID.
+        document_id: UUID of the parent document.
         file_name: Original file name shown to users.
         file_size: File size in bytes.
         attachment_type: Semantic role within the document workflow.
+        attachment_document_type: DTO wrapper type discriminator.
         content_type: File format used to select parser/OCR pipeline.
         mime_type: MIME type string (optional, from HTTP headers).
         storage_path: Full path in MinIO / S3 (set by infrastructure layer).
         bucket_name: MinIO bucket name (set by infrastructure layer).
         minio_name: Internal MinIO object name (set by infrastructure layer).
+        source_original_name: Original file name before MinIO rename.
         content_hash: File integrity hash (``hashED`` in Java DTO).
         author_id: UUID of the employee who uploaded the file.
         upload_date: Timestamp of the upload.
+        modify_date: Timestamp of the last modification.
+        last_modify_user_id: UUID of the last modifier.
         version_number: Sequential version counter for this attachment.
         is_deleted: Soft-delete flag.
         signs: List of applied electronic signatures.
@@ -194,7 +277,11 @@ class Attachment(MutableDomainModel):
 
     @property
     def is_signed(self) -> bool:
-        """Returns True when the attachment has at least one digital signature."""
+        """Returns True when the attachment has at least one digital signature.
+
+        Returns:
+            ``True`` when ``signs`` list is non-empty.
+        """
         return bool(self.signs)
 
     @property

@@ -1,4 +1,6 @@
 # src/ai_edms_assistant/domain/entities/appeal.py
+"""Domain entity for citizen / legal-entity appeals."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -83,11 +85,6 @@ class GeoLocation(DomainModel):
         Returns:
             String like 'Россия, Московская обл., Одинцовский р-н, Одинцово'.
             Empty string when no location parts are populated.
-
-        Example:
-            >>> loc = GeoLocation(country_name="Россия", region_name="Московская обл.")
-            >>> loc.as_text()
-            'Россия, Московская обл.'
         """
         parts = [
             p
@@ -110,16 +107,17 @@ class GeoLocation(DomainModel):
 class DocumentAppeal(MutableDomainModel):
     """Domain entity for citizen / legal-entity appeals (Обращения граждан).
 
-    Maps to ``DocumentAppealDto`` in the Java backend. This entity is
-    embedded inside the ``Document`` aggregate as the ``appeal`` field
-    and is only populated when ``document_category == APPEAL``.
+    Maps to ``DocumentAppealDto`` in the Java backend. Embedded inside
+    the ``Document`` aggregate as the ``appeal`` field; populated only
+    when ``document_category == APPEAL``.
 
-    The ``geo_location`` field provides a structured alternative to the
-    flat ``full_address`` string — autofill logic should prefer structured
-    data for API calls and fall back to ``full_address`` for LLM context.
+    Null-safety:
+        ``id`` is ``UUID | None`` because the Java API returns ``id: null``
+        for appeals that exist in the document but haven't been persisted
+        to the appeal registry yet (pre-registration state).
 
     Attributes:
-        id: Appeal record UUID.
+        id: Appeal record UUID. May be None for unregistered appeals.
         applicant_name: Full applicant name (fioApplicant in Java DTO).
         declarant_type: Physical or legal entity.
         collective: Whether the appeal has multiple co-signers.
@@ -130,7 +128,7 @@ class DocumentAppeal(MutableDomainModel):
         full_address: Free-text postal address (fallback from geo_location).
         index: Postal index (ZIP code).
         organization_name: Organization name for legal entity applicants.
-        geo_location: Structured geographic hierarchy (preferred over full_address).
+        geo_location: Structured geographic hierarchy.
         citizen_type_id: UUID reference to appeal type in EDMS dictionary.
         question_category: Topic / theme of the appeal (for LLM analytics).
         subject_id: UUID reference to the subject theme in EDMS dictionary.
@@ -148,7 +146,7 @@ class DocumentAppeal(MutableDomainModel):
         description: Free-text description of the appeal content (for LLM).
     """
 
-    id: UUID
+    id: UUID | None = None
 
     appeal_number: str | None = Field(default=None, alias="appealNumber")
     applicant_name: str | None = Field(default=None, alias="fioApplicant")
@@ -209,22 +207,9 @@ class DocumentAppeal(MutableDomainModel):
     def applicant_summary(self) -> str:
         """Compact applicant description for LLM context injection.
 
-        Assembles a single-line string combining name, declarant type label,
-        and location. Used to populate the agent's system prompt context.
-
         Returns:
             Formatted string like:
-            'Иванов Иван Иванович (физ. лицо), Россия, Московская обл., Одинцово'
-
-        Example:
-            >>> from uuid import UUID, uuid4
-            >>> appeal = DocumentAppeal(
-            ...     id=uuid4(),
-            ...     applicant_name="Иванов И.И.",
-            ...     declarant_type=DeclarantType.INDIVIDUAL,
-            ... )
-            >>> appeal.applicant_summary
-            'Иванов И.И. (физ. лицо)'
+            'Иванов Иван Иванович (физ. лицо), Россия, Московская обл.'
         """
         parts: list[str] = []
 

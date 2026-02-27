@@ -1,5 +1,9 @@
 # src/ai_edms_assistant/application/tools/__init__.py
-"""LangChain tools for EDMS operations."""
+"""
+LangChain tools for EDMS operations.
+"""
+
+from __future__ import annotations
 
 from .attachment_tool import AttachmentFetchInput, AttachmentTool
 from .autofill_tool import AppealAutofillInput, AppealAutofillTool
@@ -14,63 +18,84 @@ from .task_tool import TaskCreateInput, TaskCreationTool
 
 
 def create_all_tools(
-        document_repository,
-        employee_repository,
-        task_repository,
-        llm_provider,
-        nlp_extractor,
-        storage,
-        document_comparer,
-        appeal_validator,
-        task_assigner,
+    document_repository,
+    employee_repository,
+    task_repository,
+    llm_provider,
+    nlp_extractor,
+    document_comparer,
+    appeal_validator,
+    task_assigner,
+    # storage=None оставлен для AppealAutofillTool
+    storage=None,
+    # attachment_client=None — EdmsAttachmentClient для AttachmentTool
+    attachment_client=None,
 ):
-    """Factory function to create all tools with injected dependencies.
+    """Factory: create all EDMS tools with dependency injection.
 
-    Called by EdmsDocumentAgent.__init__() after all dependencies are available.
+    Called by EdmsDocumentAgent._create_tools() after all dependencies
+    are constructed.
 
     Args:
-        document_repository: AbstractDocumentRepository instance
-        employee_repository: AbstractEmployeeRepository instance
-        task_repository: AbstractTaskRepository instance
-        llm_provider: AbstractLLMProvider instance
-        nlp_extractor: AbstractNLPExtractor instance
-        storage: AbstractStorage instance
-        document_comparer: DocumentComparer domain service
-        appeal_validator: AppealValidator domain service
-        task_assigner: TaskAssigner domain service
+        document_repository: AbstractDocumentRepository instance.
+        employee_repository: AbstractEmployeeRepository instance.
+        task_repository: AbstractTaskRepository instance.
+        llm_provider: AbstractLLMProvider instance.
+        nlp_extractor: AbstractNLPExtractor instance (or None).
+        document_comparer: DocumentComparer domain service.
+        appeal_validator: AppealValidator domain service.
+        task_assigner: TaskAssigner domain service.
+        storage: AbstractStorage (optional, for AppealAutofillTool only).
+        attachment_client: EdmsAttachmentClient (optional, for AttachmentTool).
+            If None — AttachmentTool creates client lazily on first use.
 
     Returns:
-        List of instantiated tool objects
+        List of instantiated AbstractEdmsTool objects (9 tools).
     """
     return [
-        DocumentAnalysisTool(document_repository=document_repository),
+        # 1. Анализ метаданных документа
+        DocumentAnalysisTool(
+            document_repository=document_repository,
+        ),
+        # 2. Извлечение текста из файлов-вложений
         AttachmentTool(
             document_repository=document_repository,
-            storage=storage,
+            attachment_client=attachment_client,
         ),
+        # 3. Сравнение документов
         ComparisonTool(
             document_repository=document_repository,
             document_comparer=document_comparer,
             llm_provider=llm_provider,
         ),
-        SummarizationTool(llm_provider=llm_provider),
+        # 4. Суммаризация текста
+        SummarizationTool(
+            llm_provider=llm_provider,
+        ),
+        # 5. Создание поручений
         TaskCreationTool(
             document_repository=document_repository,
             employee_repository=employee_repository,
             task_repository=task_repository,
             task_assigner=task_assigner,
         ),
-        EmployeeSearchTool(employee_repository=employee_repository),
+        # 6. Поиск сотрудников
+        EmployeeSearchTool(
+            employee_repository=employee_repository,
+        ),
+        # 7. Автозаполнение обращений (NLP)
         AppealAutofillTool(
             document_repository=document_repository,
             nlp_extractor=nlp_extractor,
             storage=storage,
             appeal_validator=appeal_validator,
         ),
+        # 8. Создание листа ознакомления
         IntroductionTool(
             document_repository=document_repository,
             employee_repository=employee_repository,
         ),
+        # 9. Чтение локального файла (загруженного пользователем)
         LocalFileTool(),
     ]
 

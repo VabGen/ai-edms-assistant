@@ -117,6 +117,10 @@ class EdmsDocumentClient(EdmsHttpClient):
             operation: One of DocumentOperationType enum values
                        (DOCUMENT_MAIN_FIELDS_UPDATE, DOCUMENT_MAIN_FIELDS_APPEAL_UPDATE, …).
             payload:   Operation-specific dict (see resources_openapi.py for schemas).
+            :param token:
+            :param payload:
+            :param operation:
+            :param document_id:
         """
         await self._make_request(
             "POST",

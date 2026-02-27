@@ -1,6 +1,11 @@
 # src/ai_edms_assistant/application/agents/agent_state.py
+"""
+LangGraph state schemas for EDMS agent workflow.
+"""
+
 from __future__ import annotations
 
+import operator
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import BaseMessage
@@ -8,14 +13,20 @@ from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict):
-    """State schema for LangGraph agent workflow.
-
-    Uses LangGraph's ``add_messages`` reducer to automatically append new
-    messages to the conversation history without duplicates.
+    """
+    Base state schema for LangGraph agent workflow.
 
     Attributes:
-        messages: Conversation history. New messages are appended via
-            ``add_messages`` reducer.
+        messages: Conversation history with add_messages reducer
+            (auto-append, dedup by message.id).
     """
 
     messages: Annotated[list[BaseMessage], add_messages]
+
+
+class AgentStateWithCounter(AgentState, total=False):
+    """
+    Extended state with iteration counter for infinite loop protection.
+    """
+
+    graph_iterations: Annotated[int, operator.add]

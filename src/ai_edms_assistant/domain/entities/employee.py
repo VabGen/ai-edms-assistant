@@ -1,11 +1,14 @@
 # src/ai_edms_assistant/domain/entities/employee.py
+"""Employee domain entities."""
+
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
-from pydantic import Field, computed_field
+from pydantic import Field, computed_field, model_validator
 
 from .base import DomainModel, MutableDomainModel
 
@@ -23,13 +26,9 @@ class UserInfo(DomainModel):
     — instances are embedded inside ``Document``, ``Task`` and other aggregates
     and must not be mutated after construction.
 
-    The three-part name (``last_name``, ``first_name``, ``middle_name``)
-    mirrors the actual API response structure. Computed properties assemble
-    display strings for LLM context injection.
-
     Attributes:
-        id: Employee UUID. Optional because some API responses return user
-            info without an explicit ID (e.g. ``whoSigned`` on historical docs).
+        id: Employee UUID. Optional — some API responses return user info
+            without an explicit ID (e.g. ``whoSigned`` on historical docs).
         first_name: First name (Имя).
         last_name: Last name / surname (Фамилия).
         middle_name: Patronymic (Отчество).
@@ -60,10 +59,6 @@ class UserInfo(DomainModel):
         Returns:
             'Фамилия Имя Отчество'. Falls back to empty string when no
             name parts are set.
-
-        Example:
-            >>> UserInfo(last_name="Иванов", first_name="Иван").name
-            'Иванов Иван'
         """
         parts = [p for p in [self.last_name, self.first_name, self.middle_name] if p]
         return " ".join(parts)
@@ -73,15 +68,8 @@ class UserInfo(DomainModel):
     def short_name(self) -> str:
         """Abbreviated name in 'Фамилия И.О.' format.
 
-        Used in document headers and LLM context summaries where space is
-        limited.
-
         Returns:
             Abbreviated name string, or full name if last_name is absent.
-
-        Example:
-            >>> UserInfo(last_name="Иванов", first_name="Иван", middle_name="Иванович").short_name
-            'Иванов И.И.'
         """
         if not self.last_name:
             return self.name
@@ -96,7 +84,7 @@ class Employee(MutableDomainModel):
     """Full employee entity for organizational structure operations.
 
     Unlike the lightweight ``UserInfo`` value object, ``Employee`` is a
-    mutable aggregate that represents a full record from the EDMS employee
+    mutable aggregate representing a full record from the EDMS employee
     directory. Used in employee search, introduction list creation, and
     task assignment workflows.
 
@@ -112,43 +100,36 @@ class Employee(MutableDomainModel):
         post_name: Job title (Должность).
         email: Corporate e-mail.
         phone: Contact phone number.
-        address: Physical address.
-        getu_id: External GETU system identifier.
-        ln_address: Lotus Notes address (legacy integration).
-        photo_path: Path to the employee photo in storage.
-        facsimile_path: Path to the facsimile image in storage.
         is_active: Whether the employee account is active.
     """
 
     id: UUID
     organization_id: str = Field(alias="organizationId")
 
-    # После строки: organization_id: str
-
-    # Account & External IDs:
-    account_id: str | None = Field(default=None, alias="uId")  # PRIMARY!
+    # ── Account & External IDs ────────────────────────────────────────────
+    account_id: str | None = Field(default=None, alias="uId")
     external_id: str | None = Field(default=None, alias="externalId")
     personal_number: str | None = Field(default=None, alias="personalNumber")
     ldap_name: str | None = Field(default=None, alias="ldapName")
     sid: str | None = None
 
-    # Post/Position:
+    # ── Post / Position ───────────────────────────────────────────────────
     post_id: str | None = Field(default=None, alias="postId")
     full_post_name: str | None = Field(default=None, alias="fullPostName")
 
-    # Additional Info:
+    # ── Additional Info ───────────────────────────────────────────────────
     place: str | None = None
     url: str | None = None
     fired: bool = False
 
-    # Acting Position (И.О.):
+    # ── Acting Position (И.О.) ────────────────────────────────────────────
     is_acting: bool = Field(default=False, alias="io")
     has_acting: bool = Field(default=False, alias="haveIo")
 
-    # Notifications:
+    # ── Notifications ─────────────────────────────────────────────────────
     notify: bool = True
 
-    # Metadata:
+    # ── Metadata ──────────────────────────────────────────────────────────
     create_type: EmployeeCreateType | None = Field(default=None, alias="createType")
     create_date: datetime | None = Field(default=None, alias="createDate")
     last_manual_avatar_upload_date: datetime | None = Field(
@@ -157,34 +138,84 @@ class Employee(MutableDomainModel):
     current_user_leader: bool | None = Field(default=None, alias="currentUserLeader")
     order: int = 0
 
-    # Avatar IDs:
+    # ── Avatar IDs ────────────────────────────────────────────────────────
     avatar_id: UUID | None = Field(default=None, alias="avatarId")
     small_avatar_id: UUID | None = Field(default=None, alias="smallAvatarId")
     facsimile_id: UUID | None = Field(default=None, alias="facsimileId")
 
-    # Blocked fields:
+    # ── Blocked fields ────────────────────────────────────────────────────
     blocked_fields: list[str] | None = Field(default=None, alias="blockedFields")
 
+    # ── Name ──────────────────────────────────────────────────────────────
     first_name: str | None = Field(default=None, alias="firstName")
     last_name: str | None = Field(default=None, alias="lastName")
     middle_name: str | None = Field(default=None, alias="middleName")
 
+    # ── Department & Post ─────────────────────────────────────────────────
     department_id: UUID | None = Field(default=None, alias="departmentId")
     department_name: str | None = Field(default=None, alias="departmentName")
     department_code: str | None = Field(default=None, alias="departmentCode")
     post_name: str | None = Field(default=None, alias="postName")
 
+    # ── Contacts ──────────────────────────────────────────────────────────
     email: str | None = None
     phone: str | None = None
     address: str | None = None
 
+    # ── External Systems ──────────────────────────────────────────────────
     getu_id: str | None = Field(default=None, alias="getuId")
     ln_address: str | None = Field(default=None, alias="lnAddress")
 
+    # ── Media ─────────────────────────────────────────────────────────────
     photo_path: str | None = Field(default=None, alias="photoPath")
     facsimile_path: str | None = Field(default=None, alias="facsimilePath")
 
+    # ── Status ────────────────────────────────────────────────────────────
     is_active: bool = Field(default=True, alias="isActive")
+
+    # ------------------------------------------------------------------
+    # Null-safety validator
+    # ------------------------------------------------------------------
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_java_nulls(cls, values: Any) -> Any:
+        """Normalize Java API quirks before Pydantic field validation."""
+        if not isinstance(values, dict):
+            return values
+
+        # ── int → str: ───────────────────
+        int_to_str_fields = [
+            "postId",
+            "externalId",
+            "personalNumber",
+            "ldapName",
+            "sid",
+            "uId",
+            "getuId",
+        ]
+        for field_name in int_to_str_fields:
+            val = values.get(field_name)
+            if isinstance(val, int):
+                values[field_name] = str(val)
+
+        # ── None → bool: ──────────────────
+        bool_defaults: dict[str, bool] = {
+            "notify": True,
+            "fired": False,
+            "active": True,
+            "io": False,
+            "haveIo": False,
+        }
+        for field_name, default in bool_defaults.items():
+            if values.get(field_name) is None:
+                values[field_name] = default
+
+        return values
+
+    # ------------------------------------------------------------------
+    # Computed properties
+    # ------------------------------------------------------------------
 
     @computed_field
     @property
@@ -211,7 +242,7 @@ class Employee(MutableDomainModel):
         return f"{self.last_name} {initials}".strip()
 
     def to_user_info(self) -> UserInfo:
-        """Converts this Employee to a lightweight UserInfo reference.
+        """Convert this Employee to a lightweight UserInfo reference.
 
         Used when constructing ``Document`` or ``Task`` entities that embed
         employees as value objects (author, executor, etc.).

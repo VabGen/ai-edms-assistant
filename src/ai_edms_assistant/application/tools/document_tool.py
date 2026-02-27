@@ -1,115 +1,156 @@
 # src/ai_edms_assistant/application/tools/document_tool.py
+"""Document analysis tool — semantic context builder for EDMS documents."""
+
 from __future__ import annotations
 
+import logging
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from ...domain.repositories import AbstractDocumentRepository
+from ...infrastructure.edms_api.clients.document_client import EdmsDocumentClient
+from ...infrastructure.nlp.processors.document_nlp_service import DocumentNLPService
 from .base_tool import AbstractEdmsTool
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentAnalysisInput(BaseModel):
     """Input schema for document analysis tool.
 
+    Agent injects ``token`` and ``document_id`` automatically via
+    the parameter injection loop in ``EdmsDocumentAgent._orchestrate()``.
+
     Attributes:
-        document_id: UUID of the document to analyze.
-        token: JWT bearer token (auto-injected by agent).
+        document_id: UUID string of the document (context_ui_id from UI).
+        token: JWT bearer token for EDMS API auth (auto-injected).
     """
 
-    document_id: UUID = Field(..., description="UUID документа")
-    token: str = Field(..., description="JWT токен авторизации")
+    document_id: str = Field(..., description="UUID документа (context_ui_id)")
+    token: str = Field(..., description="JWT токен авторизации пользователя")
 
 
 class DocumentAnalysisTool(AbstractEdmsTool):
-    """Tool for analyzing EDMS document structure and metadata.
+    """Semantic document analysis tool.
 
-    Fetches the document from the repository and returns a structured
-    summary of its metadata, attachments, tasks, and appeal data.
+    Fetches raw document data from EDMS API and processes it through
+    ``DocumentNLPService`` to produce a structured, LLM-ready context.
 
-    Dependencies:
-        - ``AbstractDocumentRepository``: Fetch document by ID.
+    Attributes:
+        name: Tool name used by LangChain / LangGraph.
+        description: Natural language description for LLM tool selection.
+        args_schema: Pydantic input validation schema.
     """
 
     name: str = "doc_get_details"
     description: str = (
         "Анализирует документ СЭД и все его вложенные сущности "
-        "(поручения, процессы, обращения, договоры). "
-        "Возвращает семантически структурированный контекст."
+        "(поручения, процессы, обращения, договоры, вложения). "
+        "Возвращает семантически структурированный контекст документа."
     )
     args_schema: type[BaseModel] = DocumentAnalysisInput
 
-    def __init__(self, document_repository: AbstractDocumentRepository, **kwargs):
-        """Initialize with injected document repository.
+    async def _arun(self, document_id: str, token: str) -> dict[str, Any]:
+        """Execute document semantic analysis.
+
+        Steps:
+            1. Fetch raw dict from EDMS API (no domain mapping — avoids KeyError)
+            2. Process through null-safe DocumentNLPService
+            3. Return structured analytics for LLM consumption
 
         Args:
-            document_repository: Repository for fetching documents.
-            **kwargs: Additional BaseTool init arguments.
-        """
-        super().__init__(**kwargs)
-        self._doc_repo = document_repository
-
-    async def _arun(self, document_id: UUID, token: str) -> dict[str, Any]:
-        """Execute document analysis.
-
-        Args:
-            document_id: Document UUID.
-            token: Auth token.
+            document_id: Document UUID string.
+            token: JWT bearer token.
 
         Returns:
-            Structured document analytics dict.
+            Dict with ``status`` and ``document_analytics`` keys on success,
+            or ``error`` key on failure.
         """
+        logger.info(
+            "document_tool_start",
+            extra={"document_id": document_id},
+        )
+
         try:
-            document = await self._doc_repo.get_by_id(
-                entity_id=document_id,
-                token=token,
-            )
+            # ── Шаг 1: Получить RAW dict из API ──────────────────────────────
+            raw_data = await self._fetch_raw(document_id, token)
 
-            if document is None:
-                return self._handle_error(
-                    ValueError(f"Документ {document_id} не найден")
+            if not raw_data:
+                logger.warning(
+                    "document_tool_not_found",
+                    extra={"document_id": document_id},
                 )
-
-            # Build structured context
-            analytics = {
-                "основные_реквизиты": {
-                    "рег_номер": document.reg_number,
-                    "дата_регистрации": (
-                        document.reg_date.isoformat() if document.reg_date else None
-                    ),
-                    "статус": document.status.value if document.status else None,
-                    "категория": (
-                        document.document_category.value
-                        if document.document_category
-                        else None
-                    ),
-                },
-                "краткое_содержание": document.short_summary,
-                "количество_вложений": len(document.attachments),
-                "количество_поручений": len(document.tasks),
-            }
-
-            # Add appeal data if present
-            if document.appeal:
-                analytics["обращение"] = {
-                    "заявитель": document.appeal.applicant_name,
-                    "тип_заявителя": (
-                        document.appeal.declarant_type.value
-                        if document.appeal.declarant_type
-                        else None
-                    ),
-                    "телефон": document.appeal.phone,
-                    "email": document.appeal.email,
+                return {
+                    "error": f"Документ {document_id} не найден или недоступен.",
+                    "document_id": document_id,
                 }
 
-            return self._success_response(
-                data=analytics, message="Документ успешно проанализирован"
+            # ── Шаг 2: NLP обработка (null-safe) ─────────────────────────────
+            nlp = DocumentNLPService()
+            context = nlp.process_document(raw_data)
+
+            logger.info(
+                "document_tool_success",
+                extra={
+                    "document_id": document_id,
+                    "context_keys": list(context.keys()),
+                },
             )
 
-        except Exception as e:
-            return self._handle_error(e)
+            return {
+                "status": "success",
+                "document_analytics": context,
+            }
 
-    def _run(self, *args, **kwargs) -> dict[str, Any]:
-        """Sync execution not supported."""
-        raise NotImplementedError("Use _arun for async execution")
+        except Exception as exc:
+            logger.error(
+                "document_tool_error",
+                exc_info=True,
+                extra={"document_id": document_id, "error": str(exc)},
+            )
+            return {
+                "error": f"Ошибка обработки документа: {str(exc)}",
+                "document_id": document_id,
+            }
+
+    @staticmethod
+    async def _fetch_raw(document_id: str, token: str) -> dict[str, Any] | None:
+        """Fetch raw document dict from EDMS API.
+
+        Uses ``EdmsDocumentClient`` directly — bypasses ``EdmsDocumentRepository``
+        and ``DocumentMapper`` to avoid null-field crashes.
+
+        Args:
+            document_id: Document UUID string.
+            token: JWT bearer token.
+
+        Returns:
+            Raw API response dict, or None if not found / request failed.
+        """
+        try:
+            doc_uuid = UUID(str(document_id))
+        except ValueError:
+            logger.error(
+                "document_tool_invalid_uuid",
+                extra={"document_id": document_id},
+            )
+            return None
+
+        async with EdmsDocumentClient() as client:
+            raw = await client.get_by_id(document_id=doc_uuid, token=token)
+
+        if not raw:
+            return None
+
+        return raw
+
+    def _run(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Synchronous execution not supported.
+
+        Raises:
+            NotImplementedError: Always.
+        """
+        raise NotImplementedError(
+            "DocumentAnalysisTool supports only async execution via _arun()"
+        )

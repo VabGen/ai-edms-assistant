@@ -1,13 +1,6 @@
 # src/ai_edms_assistant/interfaces/cli/commands.py
 """
 CLI interactive REPL for EDMS AI Assistant.
-
-Useful for local development and testing without a running HTTP server.
-Uses the same EdmsDocumentAgent as the REST API.
-
-Usage::
-
-    python -m ai_edms_assistant.interfaces.cli.commands --token <jwt>
 """
 
 from __future__ import annotations
@@ -17,14 +10,14 @@ import argparse
 
 
 async def _chat_loop(token: str, context_id: str | None = None) -> None:
-    """
-    Interactive async chat loop against EdmsDocumentAgent.
+    """Interactive async chat loop against EdmsDocumentAgent.
 
     Args:
         token:      JWT bearer token for EDMS API calls.
         context_id: Optional document UUID to set as UI context.
     """
-    from ...agent import EdmsDocumentAgent
+    from ...application.agents import EdmsDocumentAgent
+    from ...application.dto import AgentRequest
 
     agent = EdmsDocumentAgent()
     thread_id = f"cli_{id(agent)}"
@@ -43,12 +36,15 @@ async def _chat_loop(token: str, context_id: str | None = None) -> None:
         if not user_input:
             continue
 
-        result = await agent.chat(
+        request = AgentRequest(
             message=user_input,
             user_token=token,
             context_ui_id=context_id,
             thread_id=thread_id,
+            user_context={},
         )
+
+        result = await agent.chat(request)
         status = result.get("status", "ok")
         content = result.get("content") or result.get("message", "")
         print(f"Agent [{status}]: {content}\n")

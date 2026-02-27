@@ -1,16 +1,16 @@
 # src/ai_edms_assistant/infrastructure/edms_api/repositories/edms_employee_repository.py
+"""EDMS Employee Repository — REST API implementation."""
+
 from __future__ import annotations
 
 import structlog
 from uuid import UUID
 from typing import Any
 
-from ai_edms_assistant.infrastructure.edms_api.http_client import EdmsHttpClient
+from ..http_client import EdmsHttpClient
+from ..mappers.employee_mapper import EmployeeMapper
 from ....domain.entities.employee import Employee
-from ai_edms_assistant.domain.value_objects.filters import (
-    EmployeeFilter,
-    UserActionFilter,
-)
+from ....domain.value_objects.filters import EmployeeFilter, UserActionFilter
 from ....domain.repositories.employee_repository import AbstractEmployeeRepository
 from ....domain.repositories.base import Page, PageRequest
 
@@ -18,68 +18,63 @@ logger = structlog.get_logger(__name__)
 
 
 class EdmsEmployeeRepository(AbstractEmployeeRepository):
-    """
-    EDMS REST API implementation of AbstractEmployeeRepository.
+    """Concrete implementation of AbstractEmployeeRepository.
 
-    Uses EdmsHttpClient._make_request() exclusively — no .get()/.post() shortcuts.
-    All filters come from domain/filters.py; resources_openapi.py is NOT used.
-
-    Key design decisions:
-    - find_by_name_fts returns Employee | None (single best FTS match)
-      searchFtsTopByLastName → GET /api/employee/fts-lastname
-    - search uses POST /api/employee/search for complex queries
-    - get_activity calls UserActionFilter.validate_for_dashboard() before request
+    HTTP calls: EdmsHttpClient._make_request() — shared transport.
+    Mapping/normalization: EmployeeMapper — single source of truth.
+    No normalization logic in this class.
 
     Attributes:
-        http_client: Shared async EdmsHttpClient instance.
+        _http: Shared EdmsHttpClient instance.
     """
 
     def __init__(self, http_client: EdmsHttpClient) -> None:
-        self.http_client = http_client
+        """Initialize with shared HTTP client.
+
+        Args:
+            http_client: Configured EdmsHttpClient instance (injected).
+        """
+        self._http = http_client
 
     # ------------------------------------------------------------------
-    # Mapper: raw API dict → domain Employee
+    # Private HTTP helpers — thin wrappers, return raw dicts
     # ------------------------------------------------------------------
 
-    def _map_to_entity(self, data: dict[str, Any]) -> Employee:
-        """
-        Maps a raw EDMS API EmployeeDto dict to a domain Employee.
+    async def _get(self, path: str, token: str, params: dict | None = None) -> Any:
+        """HTTP GET helper.
 
-        Handles both flat fields (departmentName, postName) and nested
-        post/department objects returned when includes=[POST,DEPARTMENT].
-        """
-        post_raw = data.get("post") or {}
-        dept_raw = data.get("department") or {}
+        Args:
+            path: API path relative to base URL.
+            token: JWT bearer token.
+            params: Optional query parameters.
 
-        return Employee(
-            id=UUID(data["id"]) if data.get("id") else None,
-            first_name=data.get("firstName"),
-            last_name=data.get("lastName"),
-            middle_name=data.get("middleName"),
-            organization_id=data.get("organizationId"),
-            department_id=(
-                UUID(dept_raw["id"])
-                if dept_raw.get("id")
-                else (UUID(data["departmentId"]) if data.get("departmentId") else None)
-            ),
-            department_name=(
-                dept_raw.get("departmentName")
-                or dept_raw.get("name")
-                or data.get("departmentName")
-            ),
-            post_id=(post_raw.get("id") or data.get("postId")),
-            post_name=(
-                post_raw.get("postName") or post_raw.get("name") or data.get("postName")
-            ),
-            email=data.get("email"),
-            phone=data.get("phone"),
-            is_active=data.get("active", True),
-            fired=data.get("fired", False),
-            getu_id=data.get("uId"),
+        Returns:
+            Parsed JSON response or None.
+        """
+        return await self._http._make_request(
+            "GET", path, token=token, params=params or {}
+        )
+
+    async def _post(
+        self, path: str, token: str, params: dict | None = None, json: Any = None
+    ) -> Any:
+        """HTTP POST helper.
+
+        Args:
+            path: API path relative to base URL.
+            token: JWT bearer token.
+            params: Optional query parameters.
+            json: Request body (serialized to JSON).
+
+        Returns:
+            Parsed JSON response or None.
+        """
+        return await self._http._make_request(
+            "POST", path, token=token, params=params or {}, json=json
         )
 
     # ------------------------------------------------------------------
-    # BaseRepository
+    # AbstractRepository — base lookups
     # ------------------------------------------------------------------
 
     async def get_by_id(
@@ -88,16 +83,27 @@ class EdmsEmployeeRepository(AbstractEmployeeRepository):
         token: str,
         organization_id: str | None = None,
     ) -> Employee | None:
-        """GET /api/employee/{id}"""
-        params: dict = {}
+        """Fetch full employee card by UUID.
+
+        GET /api/employee/{id}
+        Returns nested post/department objects.
+        EmployeeMapper.normalize() extracts them to flat fields.
+
+        Args:
+            entity_id: Employee UUID.
+            token: JWT bearer token.
+            organization_id: Optional org scope.
+
+        Returns:
+            Fully enriched Employee entity or None.
+        """
+        params: dict[str, Any] = {}
         if organization_id:
             params["organizationId"] = organization_id
 
         try:
-            data = await self.http_client._make_request(
-                "GET", f"api/employee/{entity_id}", token=token, params=params
-            )
-            return self._map_to_entity(data) if data else None
+            raw = await self._get(f"api/employee/{entity_id}", token, params)
+            return EmployeeMapper.to_employee(raw)
         except Exception as exc:
             logger.error(
                 "edms_employee_get_by_id_failed",
@@ -112,19 +118,24 @@ class EdmsEmployeeRepository(AbstractEmployeeRepository):
         token: str,
         organization_id: str | None = None,
     ) -> list[Employee]:
-        """
-        POST /api/employee/search with ids filter.
+        """Batch fetch employees by UUID list via search.
 
-        findByIdIn / findByIdInAndOrganizationId.
-        Uses EmployeeFilter.ids to batch-fetch in a single API request.
+        Args:
+            entity_ids: List of employee UUIDs.
+            token: JWT bearer token.
+            organization_id: Optional org scope.
+
+        Returns:
+            List of mapped Employee entities.
         """
         if not entity_ids:
             return []
-        f = EmployeeFilter(ids=list(entity_ids))
-        if organization_id:
-            f = EmployeeFilter(ids=list(entity_ids), org_id=organization_id)
-        pg = await self.search(f, token, PageRequest(size=len(entity_ids)))
-        return pg.items
+        page = await self.search(
+            filters=EmployeeFilter(ids=list(entity_ids), org_id=organization_id),
+            token=token,
+            pagination=PageRequest(size=len(entity_ids)),
+        )
+        return page.items
 
     async def find_page(
         self,
@@ -132,15 +143,24 @@ class EdmsEmployeeRepository(AbstractEmployeeRepository):
         organization_id: str | None = None,
         pagination: PageRequest | None = None,
     ) -> Page[Employee]:
-        """Delegates to search() with active=True filter."""
-        f = EmployeeFilter(
-            active=True,
-            org_id=organization_id if organization_id else None,
+        """Fetch paginated active employee list.
+
+        Args:
+            token: JWT bearer token.
+            organization_id: Optional org scope.
+            pagination: Page/size/sort params.
+
+        Returns:
+            Page[Employee].
+        """
+        return await self.search(
+            filters=EmployeeFilter(active=True, org_id=organization_id),
+            token=token,
+            pagination=pagination,
         )
-        return await self.search(f, token, pagination=pagination)
 
     # ------------------------------------------------------------------
-    # EmployeeRepository-specific
+    # AbstractEmployeeRepository — domain-specific operations
     # ------------------------------------------------------------------
 
     async def find_by_name_fts(
@@ -149,26 +169,63 @@ class EdmsEmployeeRepository(AbstractEmployeeRepository):
         token: str,
         organization_id: str | None = None,
     ) -> Employee | None:
-        """
-        GET /api/employee/fts-lastname?fts={query}
+        """Search by last name via FTS with transparent post/dept enrichment.
 
-        Returns the single best PostgreSQL FTS match.
-        searchFtsTopByLastName (ts_rank_cd + similarity()).
-        Returns None when no match found (HTTP 404 from backend).
+        Two-step process (invisible to callers):
+            Step 1 — GET /api/employee/fts-lastname?fts={query}
+                      Best PostgreSQL similarity() match.
+                      post=null, department=null always here.
+            Step 2 — GET /api/employee/{id}
+                      Full card. EmployeeMapper.normalize() extracts
+                      post.postName → post_name,
+                      department.name → department_name.
+
+        On Step 2 failure: Step 1 result returned (graceful degradation).
+
+        Args:
+            query: Last name query string (partial, fuzzy OK).
+            token: JWT bearer token.
+            organization_id: Optional org scope.
+
+        Returns:
+            Enriched Employee or None when not found.
         """
-        params: dict = {"fts": query.strip()}
+        params: dict[str, Any] = {"fts": query.strip()}
         if organization_id:
             params["organizationId"] = organization_id
 
         try:
-            data = await self.http_client._make_request(
-                "GET", "api/employee/fts-lastname", token=token, params=params
-            )
-            return self._map_to_entity(data) if data else None
+            raw_fts = await self._get("api/employee/fts-lastname", token, params)
         except Exception as exc:
-            # 404 = нет совпадений — не ошибка
             logger.warning("edms_employee_fts_not_found", query=query, error=str(exc))
             return None
+
+        employee = EmployeeMapper.to_employee(raw_fts)
+        if employee is None:
+            return None
+
+        try:
+            enriched = await self.get_by_id(
+                entity_id=employee.id,
+                token=token,
+                organization_id=organization_id,
+            )
+            if enriched:
+                logger.debug(
+                    "edms_employee_fts_enriched",
+                    employee_id=str(employee.id),
+                    post_name=enriched.post_name,
+                    department_name=enriched.department_name,
+                )
+                return enriched
+        except Exception as exc:
+            logger.warning(
+                "edms_employee_fts_enrichment_failed",
+                employee_id=str(employee.id),
+                error=str(exc),
+            )
+
+        return employee
 
     async def search(
         self,
@@ -177,51 +234,37 @@ class EdmsEmployeeRepository(AbstractEmployeeRepository):
         organization_id: str | None = None,
         pagination: PageRequest | None = None,
     ) -> Page[Employee]:
-        """
-        POST /api/employee/search
+        """Multi-field employee search via POST /api/employee/search.
 
-        Preferred over GET for complex queries (large id lists, departments).
-        Default sort: lastName,ASC — @PageableDefault.
-        org_id from parameter overrides filters.org_id when filters.org_id is not set.
+        Args:
+            filters: EmployeeFilter value object.
+            token: JWT bearer token.
+            organization_id: Overrides filters.org_id when provided.
+            pagination: Default: size=10, sort=lastName,ASC.
+
+        Returns:
+            Page[Employee].
         """
         pag = pagination or PageRequest(size=10, sort="lastName,ASC")
 
-        # Применяем organization_id из аргумента если не задан в фильтре
-        effective_filters = filters
-        if organization_id and not filters.org_id:
-            effective_filters = EmployeeFilter(
-                first_name=filters.first_name,
-                last_name=filters.last_name,
-                middle_name=filters.middle_name,
-                fired=filters.fired,
-                active=filters.active,
-                full_post_name=filters.full_post_name,
-                post_id=filters.post_id,
-                ids=filters.ids,
-                department_id=filters.department_id,
-                employee_leader_department_id=filters.employee_leader_department_id,
-                employee_leader_department_all_id=filters.employee_leader_department_all_id,
-                includes=filters.includes,
-                org_id=organization_id,
-                exclude_role_id=filters.exclude_role_id,
-                exclude_group_id=filters.exclude_group_id,
-                exclude_ids=filters.exclude_ids,
-                all=filters.all,
-                child_departments=filters.child_departments,
-            )
-
-        data = await self.http_client._make_request(
-            "POST",
-            "api/employee/search",
-            token=token,
-            params=pag.as_params(),
-            json=effective_filters.as_api_payload(),
+        effective = (
+            filters.model_copy(update={"org_id": organization_id})
+            if organization_id and not filters.org_id
+            else filters
         )
-        data = data or {}
 
-        items = [self._map_to_entity(row) for row in data.get("content", [])]
+        data = (
+            await self._post(
+                "api/employee/search",
+                token,
+                params=pag.as_params(),
+                json=effective.as_api_payload(),
+            )
+            or {}
+        )
+
         return Page(
-            items=items,
+            items=EmployeeMapper.to_employee_list(data.get("content", [])),
             page=data.get("number", pag.page),
             size=data.get("size", pag.size),
             has_next=not data.get("last", True),
@@ -233,41 +276,52 @@ class EdmsEmployeeRepository(AbstractEmployeeRepository):
         email: str,
         token: str,
     ) -> Employee | None:
-        """
-        GET /api/employee?email={email}
+        """Find employee by corporate email.
 
-        EDMS has no dedicated /by-email endpoint — uses standard list
-        with email param and returns first match.
+        GET /api/employee?email={email}&active=true
+
+        Args:
+            email: Corporate email address.
+            token: JWT bearer token.
+
+        Returns:
+            Matching Employee or None.
         """
-        data = await self.http_client._make_request(
-            "GET", "api/employee", token=token, params={"email": email, "active": True}
+        raw = await self._get(
+            "api/employee", token, params={"email": email, "active": True}
         )
         items = (
-            data.get("content", [])
-            if isinstance(data, dict)
-            else (data if isinstance(data, list) else [])
+            raw.get("content", [])
+            if isinstance(raw, dict)
+            else (raw if isinstance(raw, list) else [])
         )
-        return self._map_to_entity(items[0]) if items else None
+        return EmployeeMapper.to_employee(items[0]) if items else None
 
     async def get_by_getu_id(
         self,
         getu_id: str,
         token: str,
     ) -> Employee | None:
-        """
+        """Find employee by GETU external identifier.
+
         GET /api/employee?uId={getu_id}&fired=false
 
-        findByuIdAndFiredIsFalse — cross-system identity lookup.
+        Args:
+            getu_id: GETU system identifier string.
+            token: JWT bearer token.
+
+        Returns:
+            Active Employee or None.
         """
-        data = await self.http_client._make_request(
-            "GET", "api/employee", token=token, params={"uId": getu_id, "fired": False}
+        raw = await self._get(
+            "api/employee", token, params={"uId": getu_id, "fired": False}
         )
         items = (
-            data.get("content", [])
-            if isinstance(data, dict)
-            else (data if isinstance(data, list) else [])
+            raw.get("content", [])
+            if isinstance(raw, dict)
+            else (raw if isinstance(raw, list) else [])
         )
-        return self._map_to_entity(items[0]) if items else None
+        return EmployeeMapper.to_employee(items[0]) if items else None
 
     async def find_by_department(
         self,
@@ -275,15 +329,23 @@ class EdmsEmployeeRepository(AbstractEmployeeRepository):
         token: str,
         organization_id: str | None = None,
     ) -> list[Employee]:
-        """
-        POST /api/employee/search with departmentId filter.
+        """Fetch all active employees in a department.
 
-        findAllByDepartmentId.
-        Uses size=200 — typical department size upper bound.
+        Args:
+            department_id: Department UUID.
+            token: JWT bearer token.
+            organization_id: Optional org scope.
+
+        Returns:
+            List of active Employee objects.
         """
-        f = EmployeeFilter(department_id=[department_id], active=True)
-        pg = await self.search(f, token, organization_id, PageRequest(size=200))
-        return pg.items
+        page = await self.search(
+            filters=EmployeeFilter(department_id=[department_id], active=True),
+            token=token,
+            organization_id=organization_id,
+            pagination=PageRequest(size=200),
+        )
+        return page.items
 
     async def find_subordinates(
         self,
@@ -291,20 +353,27 @@ class EdmsEmployeeRepository(AbstractEmployeeRepository):
         token: str,
         organization_id: str | None = None,
     ) -> list[Employee]:
-        """
-        POST /api/employee/search with employeeLeaderDepartmentAllId + childDepartments=True.
+        """Fetch all employees in a manager's reporting chain.
 
-        findAllByLeaderId recursive CTE.
-        The EDMS backend resolves the org-tree recursion; we consume the flat list.
-        Uses size=1000 for large org structures.
+        Args:
+            leader_id: Manager UUID.
+            token: JWT bearer token.
+            organization_id: Optional org scope.
+
+        Returns:
+            List of Employee in the reporting chain.
         """
-        f = EmployeeFilter(
-            employee_leader_department_all_id=leader_id,
-            child_departments=True,
-            active=True,
+        page = await self.search(
+            filters=EmployeeFilter(
+                employee_leader_department_all_id=leader_id,
+                child_departments=True,
+                active=True,
+            ),
+            token=token,
+            organization_id=organization_id,
+            pagination=PageRequest(size=1000),
         )
-        pg = await self.search(f, token, organization_id, PageRequest(size=1000))
-        return pg.items
+        return page.items
 
     async def get_activity(
         self,
@@ -312,17 +381,26 @@ class EdmsEmployeeRepository(AbstractEmployeeRepository):
         filters: UserActionFilter,
         token: str,
     ) -> list[dict]:
-        """
-        GET /api/employee/{id}/user-action
+        """Fetch employee activity log.
 
-        Requires filters.start and filters.end (Dashboard validation).
-        validate_for_dashboard() raises FilterValidationError when missing.
+        GET /api/employee/{id}/user-action
+        Requires filters.start and filters.end.
+
+        Args:
+            employee_id: Employee UUID.
+            filters: UserActionFilter with start/end required.
+            token: JWT bearer token.
+
+        Returns:
+            List of raw activity dicts.
+
+        Raises:
+            FilterValidationError: When start/end are missing.
         """
         filters.validate_for_dashboard()
-        data = await self.http_client._make_request(
-            "GET",
+        data = await self._get(
             f"api/employee/{employee_id}/user-action",
-            token=token,
+            token,
             params=filters.as_api_params(),
         )
         return data if isinstance(data, list) else []
