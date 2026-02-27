@@ -1,5 +1,6 @@
 # src/ai_edms_assistant/domain/entities/appeal.py
-"""Domain entity for citizen / legal-entity appeals."""
+"""Domain entity for citizen / legal-entity appeals (Обращения граждан).
+"""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from pydantic import Field
 
 from .base import DomainModel, MutableDomainModel
 
+
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -18,9 +20,6 @@ from .base import DomainModel, MutableDomainModel
 
 class DeclarantType(StrEnum):
     """Applicant type for citizen appeals (Тип заявителя).
-
-    Used in autofill logic to determine which API fields to populate
-    and which validation rules to apply.
 
     Attributes:
         INDIVIDUAL: Физическое лицо (private citizen).
@@ -46,16 +45,15 @@ class AppealChannel(StrEnum):
 
 
 # ---------------------------------------------------------------------------
-# Value objects (geographic hierarchy)
+# Value objects
 # ---------------------------------------------------------------------------
 
 
 class GeoLocation(DomainModel):
     """Immutable geographic hierarchy for an appeal applicant.
 
-    Stores the full address breakdown as a structured object rather than
-    a flat string to enable comparison, filtering, and autofill against
-    the EDMS reference API (regions / districts / cities dictionaries).
+    Populated from ``DocumentAppealDto`` flat fields:
+        regionId / regionName / districtId / districtName / cityId / cityName.
 
     Attributes:
         country_id: UUID of the country in the EDMS reference dictionary.
@@ -80,10 +78,8 @@ class GeoLocation(DomainModel):
     def as_text(self) -> str:
         """Returns a comma-separated human-readable location string.
 
-        Suitable for injection into LLM prompts as a compact address context.
-
         Returns:
-            String like 'Россия, Московская обл., Одинцовский р-н, Одинцово'.
+            String like ``'Республика Беларусь, Минская область, Дзержинский, Батурово'``.
             Empty string when no location parts are populated.
         """
         parts = [
@@ -106,44 +102,6 @@ class GeoLocation(DomainModel):
 
 class DocumentAppeal(MutableDomainModel):
     """Domain entity for citizen / legal-entity appeals (Обращения граждан).
-
-    Maps to ``DocumentAppealDto`` in the Java backend. Embedded inside
-    the ``Document`` aggregate as the ``appeal`` field; populated only
-    when ``document_category == APPEAL``.
-
-    Null-safety:
-        ``id`` is ``UUID | None`` because the Java API returns ``id: null``
-        for appeals that exist in the document but haven't been persisted
-        to the appeal registry yet (pre-registration state).
-
-    Attributes:
-        id: Appeal record UUID. May be None for unregistered appeals.
-        applicant_name: Full applicant name (fioApplicant in Java DTO).
-        declarant_type: Physical or legal entity.
-        collective: Whether the appeal has multiple co-signers.
-        anonymous: Whether the applicant identity is withheld.
-        signed: Whether the appeal document is physically signed.
-        email: Applicant's e-mail address.
-        phone: Applicant's phone number.
-        full_address: Free-text postal address (fallback from geo_location).
-        index: Postal index (ZIP code).
-        organization_name: Organization name for legal entity applicants.
-        geo_location: Structured geographic hierarchy.
-        citizen_type_id: UUID reference to appeal type in EDMS dictionary.
-        question_category: Topic / theme of the appeal (for LLM analytics).
-        subject_id: UUID reference to the subject theme in EDMS dictionary.
-        representative_name: Name of the legal representative (if present).
-        receipt_date: Date when the appeal was received.
-        date_doc_correspondent_org: Date of the outgoing registration at correspondent org.
-        correspondent_appeal_id: UUID of the organization that forwarded the appeal.
-        correspondent_appeal: Name of the forwarding organization (for LLM).
-        correspondent_org_number: Outgoing registration number at the correspondent.
-        index_date_cover_letter: Cover letter date and index string.
-        review_progress: Free-text description of review progress (for LLM).
-        solution_result_id: UUID reference to the resolution result dictionary.
-        nomenclature_affair_id: UUID of the nomenclature affair for archiving.
-        reasonably: Whether the appeal was deemed substantiated.
-        description: Free-text description of the appeal content (for LLM).
     """
 
     id: UUID | None = None
@@ -161,11 +119,24 @@ class DocumentAppeal(MutableDomainModel):
     index: str | None = None
     organization_name: str | None = Field(default=None, alias="organizationName")
 
+    # ── Geographic hierarchy (built by mapper from flat JSON fields) ──────
     geo_location: GeoLocation | None = Field(default=None, alias="geoLocation")
 
+    # ── Country of applicant ──────────────────────────────────────────────
+    country_appeal_id: UUID | None = Field(default=None, alias="countryAppealId")
+    # FIX: добавлено — ранее отсутствовало, LLM не знал страну заявителя
+    country_appeal_name: str | None = Field(default=None, alias="countryAppealName")
+
+    # ── Appeal type (вид обращения) ────────────────────────────────────────
     citizen_type_id: UUID | None = Field(default=None, alias="citizenTypeId")
-    question_category: str | None = Field(default=None, alias="questionCategory")
+    citizen_type_name: str | None = Field(default=None, alias="citizenTypeName")
+
+    # ── Subject / theme ────────────────────────────────────────────────────
     subject_id: UUID | None = Field(default=None, alias="subjectId")
+    subject_name: str | None = Field(default=None, alias="subjectName")
+    subject_parent_name: str | None = Field(default=None, alias="subjectParentName")
+
+    question_category: str | None = Field(default=None, alias="questionCategory")
 
     representative_name: str | None = Field(default=None, alias="representativeName")
 
@@ -191,7 +162,12 @@ class DocumentAppeal(MutableDomainModel):
         default=None, alias="nomenclatureAffairId"
     )
     reasonably: bool | None = None
+    repeat_identical_appeals: bool | None = Field(
+        default=None, alias="repeatIdenticalAppeals"
+    )
     description: str | None = None
+
+    # ── Computed properties ───────────────────────────────────────────────
 
     @property
     def is_anonymous(self) -> bool:
@@ -204,28 +180,45 @@ class DocumentAppeal(MutableDomainModel):
         return bool(self.collective)
 
     @property
-    def applicant_summary(self) -> str:
-        """Compact applicant description for LLM context injection.
+    def declarant_type_label(self) -> str:
+        """Returns Russian label for declarant type.
 
         Returns:
-            Formatted string like:
-            'Иванов Иван Иванович (физ. лицо), Россия, Московская обл.'
+            'Юридическое лицо', 'Физическое лицо', or 'Не указан'.
         """
-        parts: list[str] = []
+        if self.declarant_type == DeclarantType.ENTITY:
+            return "Юридическое лицо"
+        if self.declarant_type == DeclarantType.INDIVIDUAL:
+            return "Физическое лицо"
+        return "Не указан"
 
-        if self.applicant_name:
-            type_label = {
-                DeclarantType.INDIVIDUAL: "физ. лицо",
-                DeclarantType.ENTITY: "юр. лицо",
-            }.get(self.declarant_type, "")
-            suffix = f" ({type_label})" if type_label else ""
-            parts.append(f"{self.applicant_name}{suffix}")
+    @property
+    def location_text(self) -> str:
+        """Returns formatted address for LLM context.
 
+        Priority: geo_location.as_text() → full_address → "Не указан".
+
+        Returns:
+            Human-readable address string.
+        """
         if self.geo_location:
-            location_text = self.geo_location.as_text()
-            if location_text:
-                parts.append(location_text)
-        elif self.full_address:
-            parts.append(self.full_address)
+            text = self.geo_location.as_text()
+            if text:
+                return text
+        return self.full_address or "Не указан"
 
-        return ", ".join(parts)
+    @property
+    def subject_breadcrumb(self) -> str | None:
+        """Returns subject hierarchy as breadcrumb string.
+
+        Example:
+            'Государство, общество, политика → Конституционные права...'
+
+        Returns:
+            Breadcrumb string or None if no subject data.
+        """
+        if not self.subject_name:
+            return None
+        if self.subject_parent_name:
+            return f"{self.subject_parent_name} → {self.subject_name}"
+        return self.subject_name
