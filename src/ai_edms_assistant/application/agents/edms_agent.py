@@ -1,6 +1,6 @@
 # src/ai_edms_assistant/application/agents/edms_agent.py
 """
-EDMS Document Agent — production-grade LangGraph оркестратор
+EDMS Document Agent — основной оркестратор мультиагентной системы.
 """
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import asyncio
 import json
 import logging
 import re
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -27,85 +26,41 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 
 from ...domain.entities.document import Document
+from ...infrastructure.edms_api.http_client import EdmsHttpClient
 from ...infrastructure.llm.providers.openai_provider import get_chat_model
-from ..dto.agent import ActionType, AgentRequest, AgentResponse, AgentStatus
+from ..dto.agent import AgentRequest, AgentResponse, AgentStatus
 from ..services.semantic_dispatcher import SemanticDispatcher, UserIntent
 from ..tools import create_all_tools
-from .agent_config import AgentConfig
-from .agent_state import AgentStateWithCounter
-from .base_agent import AbstractAgent
 
+from .agent_config import AgentConfig
+from .agent_state import AgentState, AgentStateWithCounter
 
 log = structlog.get_logger(__name__)
 logger = logging.getLogger(__name__)
 
-_MAX_GRAPH_ITERATIONS: int = 10
-
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    re.IGNORECASE,
-)
-
-# ── Human-choice constants ────────────────────────────────────────────────────
-_CHOICE_THREAD_KEY: str = "choice_thread_id"
-
-_CHOICE_MAP: dict[str, str] = {
-    # Numeric shortcuts (пользователь нажал 1/2/3)
-    "1": "extractive",
-    "2": "abstractive",
-    "3": "thesis",
-    # Full names / label aliases
-    "extractive": "extractive",
-    "abstractive": "abstractive",
-    "thesis": "thesis",
-    "ключевые факты": "extractive",
-    "факты": "extractive",
-    "ключевые": "extractive",
-    "краткий пересказ": "abstractive",
-    "пересказ": "abstractive",
-    "тезисный план": "thesis",
-    "тезисы": "thesis",
-    "тезис": "thesis",
-    "план": "thesis",
-}
-
-
-def _normalize_choice(raw: str) -> str:
-    """Normalize human_choice to canonical SummaryType value.
-
-    Фронтенд может прислать "3", "Тезисный план" или "thesis" — всё маппится
-    в каноническое значение ``SummaryType`` ("extractive" / "abstractive" / "thesis").
-
-    Args:
-        raw: Raw choice string from frontend.
-
-    Returns:
-        Canonical SummaryType string. Falls back to ``raw`` when unrecognized.
-    """
-    normalized = raw.strip().lower()
-    return _CHOICE_MAP.get(normalized, raw.strip())
+MAX_GRAPH_ITERATIONS: int = 8
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ContextParams — immutable value object per request
+# Domain Value Objects
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class ContextParams:
-    """Immutable execution context for a single agent invocation.
+    """Immutable execution context for one agent invocation.
 
-    Constructed once per ``chat()`` from ``AgentRequest``.
-    Passed through the whole pipeline without mutation (frozen dataclass).
+    Built once per chat() call from AgentRequest and passed through
+    the entire orchestration pipeline without mutation.
 
     Attributes:
         user_token: JWT bearer token for all EDMS API calls.
-        document_id: UUID of the active document in UI (optional).
-        file_path: Local file path or EDMS attachment UUID from frontend.
+        document_id: UUID of the active document in UI context (optional).
+        file_path: Local temp path or EDMS attachment UUID from frontend.
         thread_id: LangGraph checkpointer session identifier.
         user_name: Display name for prompt personalization.
-        user_first_name: First name for informal address.
-        current_date: Date string for system prompt.
+        user_first_name: First name extracted from employee API.
+        current_date: Date string injected into system prompt.
     """
 
     user_token: str
@@ -114,345 +69,210 @@ class ContextParams:
     thread_id: str = "default"
     user_name: str = "пользователь"
     user_first_name: str | None = None
-    user_last_name: str | None = None
-    user_department: str | None = None
-    user_post: str | None = None
     current_date: str = field(
         default_factory=lambda: datetime.now().strftime("%d.%m.%Y")
     )
-    preselected_summary_type: str | None = None
-    """Когда фронтенд передаёт human_choice В ПЕРВОМ запросе (до suspend графа),
-    это значение инъектируется напрямую в doc_summarize_text.summary_type.
-    Сценарий: пользователь выбрал тип из выпадающего списка вложений."""
 
     def __post_init__(self) -> None:
-        """Validate token.
+        """Validate required fields on construction.
 
         Raises:
-            ValueError: When ``user_token`` is empty or not a string.
+            ValueError: When user_token is empty or not a string.
         """
         if not self.user_token or not isinstance(self.user_token, str):
             raise ValueError("user_token must be a non-empty string")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IDocumentRepository — Dependency Inversion port
+# Repository (Dependency Inversion)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class IDocumentRepository(Protocol):
-    """Minimal port for document metadata used by EdmsDocumentAgent.
-    """
+    """Port: contract for document metadata access."""
 
     async def get_document(self, token: str, doc_id: str) -> Document | None:
-        """Fetch document with all fields including attachments.
+        """Fetch document metadata.
 
         Args:
             token: JWT bearer token.
             doc_id: Document UUID string.
 
         Returns:
-            ``Document`` entity or ``None`` when not found / API error.
+            Document entity or None.
         """
         ...
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DocumentRepositoryAdapter — default infrastructure adapter
-# ─────────────────────────────────────────────────────────────────────────────
+class DocumentRepository:
+    """Default adapter: fetches documents via EdmsDocumentClient (EDMS REST API).
 
-
-class DocumentRepositoryAdapter:
-    """Default IDocumentRepository via EdmsDocumentClient + DocumentMapper.
-
-    Failures silently absorbed — missing document is NOT fatal.
-    Agent continues with empty <document_context> and LLM may call
-    doc_get_details() if needed.
+    Used when no custom repository injected at construction.
+    Failures are swallowed — a missing document is NOT a fatal error;
+    the agent continues without document context.
     """
 
     async def get_document(self, token: str, doc_id: str) -> Document | None:
-        """Fetch document via REST API.
+        """Fetch document metadata. Graceful on error.
 
         Args:
             token: JWT bearer token.
             doc_id: Document UUID string.
 
         Returns:
-            ``Document`` or ``None``.
+            Document entity or None on any error.
         """
         try:
-            from uuid import UUID as _UUID
-
-            from ...infrastructure.edms_api.clients.document_client import (
-                EdmsDocumentClient,
+            from uuid import UUID
+            from ...infrastructure.edms_api.repositories.edms_document_repository import (
+                EdmsDocumentRepository,
             )
-            from ...infrastructure.edms_api.mappers.document_mapper import (
-                DocumentMapper,
-            )
-
-            async with EdmsDocumentClient() as client:
-                raw = await client.get_by_id(
-                    document_id=_UUID(str(doc_id)),
-                    token=token,
-                )
-                if not raw:
-                    log.warning("document_not_found", doc_id=doc_id)
-                    return None
-
-                doc = DocumentMapper.from_dto(raw)
-                log.debug(
-                    "document_fetched",
-                    doc_id=doc_id,
-                    reg_number=getattr(doc, "reg_number", None),
-                    attachments_count=len(getattr(doc, "attachments", []) or []),
-                )
-                return doc
-
+            repo = EdmsDocumentRepository(http_client=EdmsHttpClient())
+            return await repo.get_by_id(entity_id=UUID(doc_id), token=token)
         except Exception as exc:
             log.warning("document_fetch_failed", doc_id=doc_id, error=str(exc))
             return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DocumentContextBuilder — Document entity → XML for LLM system prompt
+# NLP Helper — автоматический выбор типа суммаризации
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class DocumentContextBuilder:
-    """Converts a domain ``Document`` into a ``<document_context>`` XML block.
+class NLPHelperService:
+    """Recommends summarization format based on text characteristics.
 
-    Единственная ответственность — сериализация Document в XML.
-    Встраивается в system prompt, чтобы LLM знала все поля документа
-    и могла отвечать на вопросы без лишних tool calls.
+    Replaces old EDMSNaturalLanguageService.suggest_summarize_format()
+    without the external service dependency.
 
-    Покрывает:
-        - Все стандартные поля: reg_number, reg_date, status, author...
-        - custom_fields: сумма договора, дата подписания, контрагент...
-        - Вложения с UUID, именем, размером
-        - Graceful degradation: None → "—"
+    Decision matrix:
+        chars > 5000 OR digit_groups > 20  →  thesis     (объёмный / числовой)
+        chars > 2000                        →  extractive (средний объём)
+        chars <= 2000                       →  abstractive (краткий)
     """
 
     @staticmethod
-    def build(document: Document | None) -> str:
-        """Build ``<document_context>`` XML from a ``Document`` entity.
+    def suggest_summarize_format(text: str) -> dict[str, Any]:
+        """Analyze text and recommend optimal summary type.
 
         Args:
-            document: Domain ``Document`` or ``None``.
+            text: Input document text to analyze.
 
         Returns:
-            XML string. When ``document`` is ``None`` — returns note
-            instructing LLM to call ``doc_get_details()``.
+            Dict with keys:
+                recommended (str): 'thesis' | 'extractive' | 'abstractive'
+                reason (str): Human-readable explanation in Russian.
+                stats (dict): {'chars': int}
         """
-        if document is None:
-            return (
-                "\n<document_context>"
-                "\n  <note>Метаданные недоступны. "
-                "Вызови doc_get_details() для получения данных документа.</note>"
-                "\n</document_context>"
-            )
+        if not text:
+            return {
+                "recommended": "abstractive",
+                "reason": "Текст пустой — используется пересказ по умолчанию",
+                "stats": {"chars": 0},
+            }
 
-        def _s(val: Any, default: str = "—") -> str:
-            return str(val).strip() if val is not None else default
+        chars = len(text)
+        digit_groups = len(re.findall(r"\d+", text))
 
-        def _d(val: Any) -> str:
-            if val is None:
-                return "—"
-            try:
-                return val.strftime("%d.%m.%Y") if hasattr(val, "strftime") else str(val)[:10]
-            except Exception:
-                return str(val)
-
-        attachments: list = getattr(document, "attachments", None) or []
-        att_lines = [
-            f'    <attachment id="{_s(getattr(a, "id", None))}"'
-            f' name="{_s(getattr(a, "file_name", None))}"'
-            f' size="{getattr(a, "file_size", 0) or 0}"/>'
-            for a in attachments
-        ]
-        att_xml = "\n".join(att_lines) if att_lines else "    <none/>"
-
-        author = getattr(document, "author", None)
-        resp = getattr(document, "responsible_executor", None)
-
-        status = getattr(document, "status", None)
-        status_str = status.value if hasattr(status, "value") else _s(status)
-
-        custom: dict = getattr(document, "custom_fields", None) or {}
-        custom_lines = [
-            f'    <field name="{k}">{_s(v)}</field>'
-            for k, v in custom.items()
-            if v is not None
-        ]
-        custom_block = (
-            "\n  <custom_fields>\n" + "\n".join(custom_lines) + "\n  </custom_fields>"
-            if custom_lines
-            else ""
-        )
-
-        return (
-            "\n<document_context>"
-            f"\n  <id>{_s(getattr(document, 'id', None))}</id>"
-            f"\n  <reg_number>{_s(getattr(document, 'reg_number', None))}</reg_number>"
-            f"\n  <reg_date>{_d(getattr(document, 'reg_date', None))}</reg_date>"
-            f"\n  <create_date>{_d(getattr(document, 'create_date', None))}</create_date>"
-            f"\n  <short_summary>{_s(getattr(document, 'short_summary', None))}</short_summary>"
-            f"\n  <summary>{_s(getattr(document, 'summary', None))}</summary>"
-            f"\n  <status>{status_str}</status>"
-            f"\n  <document_type>{_s(getattr(document, 'document_type_name', None))}</document_type>"
-            f"\n  <profile>{_s(getattr(document, 'profile_name', None))}</profile>"
-            f"\n  <author>{_s(getattr(author, 'name', None) if author else None)}</author>"
-            f"\n  <responsible>{_s(getattr(resp, 'name', None) if resp else None)}</responsible>"
-            f"\n  <correspondent>{_s(getattr(document, 'correspondent_name', None))}</correspondent>"
-            f"\n  <pages>{_s(getattr(document, 'pages_count', None))}</pages>"
-            f"\n  <out_reg_number>{_s(getattr(document, 'out_reg_number', None))}</out_reg_number>"
-            f"\n  <out_reg_date>{_d(getattr(document, 'out_reg_date', None))}</out_reg_date>"
-            f"\n  <days_execution>{_s(getattr(document, 'days_execution', None))}</days_execution>"
-            f"\n  <control>{_s(getattr(document, 'control_flag', None))}</control>"
-            f"\n  <dsp>{_s(getattr(document, 'dsp_flag', None))}</dsp>"
-            f"\n  <attachments_count>{len(attachments)}</attachments_count>"
-            f"\n  <attachments>\n{att_xml}\n  </attachments>"
-            + custom_block
-            + "\n</document_context>"
-        )
+        if chars > 5000 or digit_groups > 20:
+            return {
+                "recommended": "thesis",
+                "reason": f"Объёмный текст ({chars} симв.) или много чисел ({digit_groups}) — тезисы оптимальны",
+                "stats": {"chars": chars},
+            }
+        elif chars > 2000:
+            return {
+                "recommended": "extractive",
+                "reason": f"Средний объём ({chars} симв.) — ключевые факты предпочтительны",
+                "stats": {"chars": chars},
+            }
+        else:
+            return {
+                "recommended": "abstractive",
+                "reason": f"Краткий текст ({chars} симв.) — пересказ своими словами",
+                "stats": {"chars": chars},
+            }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PromptBuilder — Strategy Pattern для system prompt
+# Prompt Builder (Strategy Pattern)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class PromptBuilder:
-    """Assembles the LangGraph system prompt.
+    """Builds system prompts with dynamic context injection.
 
-    Strategy Pattern: base template + intent guide + document_context_xml
-    + semantic_xml. Никакой бизнес-логики — только сборка строк.
-
-    Принцип: LLM получает ВСЁ необходимое в одном system prompt.
-    Нет скрытых данных, нет магических переменных.
+    Uses Strategy pattern: base template + intent-specific snippets + semantic XML.
     """
 
-    # ── Core template ─────────────────────────────────────────────────────────
-    _CORE: str = """\
-<role>
-Ты — интеллектуальный помощник системы электронного документооборота (EDMS/СЭД).
-Помогаешь пользователям работать с документами: анализировать, суммаризировать,
-создавать поручения, управлять ознакомлением и отвечать на любые вопросы.
+    CORE_TEMPLATE = """<role>
+Ты — экспертный помощник системы электронного документооборота (EDMS/СЭД).
+Помогаешь с анализом документов, управлением персоналом и делегированием задач.
 </role>
 
-<session>
+<context>
 - Пользователь: {user_name}
-- Должность: {user_post}
-- Подразделение: {user_department}
-- Дата: {current_date}
-- Активный документ в UI: {document_id}
-- Загруженный файл: {file_path}
+- Текущая дата: {current_date}
+- Активный документ: {context_ui_id}
+- Загруженный файл: {local_file}
+</context>
 
-ВАЖНО: поля "Должность" и "Подразделение" выше — это данные ТЕКУЩЕГО пользователя
-({user_name}). Используй их для вопросов "кто я", "мой отдел", "моя должность".
-НЕ вызывай employee_search_tool для получения своих данных.
-</session>
+<critical_rules>
+1. **Автоинъекция**: `token` и `document_id` добавляются АВТОМАТИЧЕСКИ — не передавай их явно.
 
-<rules>
-## Автоинъекция параметров
-Параметры `token` и `document_id` передаются системой АВТОМАТИЧЕСКИ.
-Ты НИКОГДА не указываешь их явно в tool_calls.
+2. **Обработка LOCAL_FILE**:
+   - UUID (xxxxxxxx-xxxx-...) → `doc_get_file_content(attachment_id=LOCAL_FILE)`
+   - Путь /tmp/... или C:\\... → `read_local_file_content(file_path=LOCAL_FILE)`
+   - "Не загружен" → `doc_get_details()` для получения списка вложений
 
-## Работа с document_context
-Блок `<document_context>` ниже содержит все поля активного документа.
-- Отвечай на вопросы о полях НАПРЯМУЮ из него (рег.номер, дата, автор, статус).
-- Поле "—" = данные отсутствуют. Скажи об этом честно.
-- НЕ вызывай doc_get_details() если ответ уже есть в document_context.
-- Если document_context содержит <note> об ошибке → вызови doc_get_details().
+3. **После requires_action**:
+   - "summarize_selection" → Предложи формат (факты/пересказ/тезисы), дождись выбора
+   - "requires_disambiguation" → Покажи список кандидатов, дождись выбора пользователя
 
-## Вопросы о ТЕКУЩЕМ пользователе (СЕБЕ)
-Вопросы "кто я", "мой отдел", "моя должность", "где я работаю" —
-отвечай ИСКЛЮЧИТЕЛЬНО из <session>. НЕ используй инструменты.
+4. После каждого вызова инструмента ОБЯЗАТЕЛЬНО формулируй финальный ответ на русском языке.
+5. Язык ответов: только русский. Обращайся по имени: {user_name}
+</critical_rules>
 
-## Поиск ДРУГОГО сотрудника (employee_search_tool)
-Используй employee_search_tool когда нужна информация о ДРУГОМ человеке:
-  - "найди Иванова" / "кто такой Петров" / "номер телефона Сидоровой"
-  - создание поручения или ознакомления с указанием ФИО
+<tool_selection>
+- Анализ документа:   doc_get_details → doc_get_file_content → doc_summarize_text
+- Файл (UUID):        doc_get_file_content(attachment_id=UUID) → doc_summarize_text
+- Файл (путь):        read_local_file_content(file_path=PATH) → doc_summarize_text
+- Сотрудник:          employee_search_tool
+- Ознакомление:       introduction_create_tool
+- Поручение:          task_create_tool
+</tool_selection>
 
-СТРАТЕГИИ поиска (выбирай минимально достаточный):
-  1. employee_search_tool(last_name="Иванов")            — по фамилии
-  2. employee_search_tool(last_name="Иванов", first_name="Николай")  — уточненный
-  3. employee_search_tool(full_post_name="директор")     — по должности
-  4. employee_search_tool(employee_id="<uuid>")          — прямой по UUID
+<attachment_rules>
+КРИТИЧНО: attachment_id — это UUID вложения файла, НЕ UUID документа.
+Они РАЗНЫЕ: document_id="{context_ui_id}", attachment_id — другое значение.
 
-ЕСЛИ найдено НЕСКОЛЬКО сотрудников:
-  → Выведи НУМЕРОВАННЫЙ список:
-    "Найдено N сотрудников с фамилией Иванов, уточните выбор:
-     1. Иванов Н. — аккумуляторщик, Технический отдел
-     2. Иванов И.А. — администратор, Бухгалтерия
-     ..."
-  → Попроси выбрать номер ИЛИ уточнить имя/должность
-  → После выбора: employee_search_tool(employee_id="<uuid выбранного>")
+Если пользователь просит "первое", "второе", "последнее" вложение или называет имя файла:
+  Шаг 1: ОБЯЗАТЕЛЬНО вызови doc_get_details() — получи список вложений с их UUID.
+  Шаг 2: Выбери нужное вложение из списка по порядку или по имени файла.
+  Шаг 3: Вызови doc_get_file_content(attachment_id=<UUID из шага 2>).
+  НИКОГДА не придумывай attachment_id самостоятельно — это вызовет ошибку.
+</attachment_rules>"""
 
-## Работа с файлами (LOCAL_FILE)
-- UUID (xxxxxxxx-xxxx-...) → doc_get_file_content(attachment_id=UUID)
-- Путь /tmp/... или C:\\... → read_local_file_content(file_path=PATH)
-- "Не загружен" → список вложений из <attachments> или вызови doc_get_details()
-
-## Суммаризация
-Всегда два шага:
-  1. doc_get_file_content(attachment_id=<uuid из attachments>) — получить текст
-  2. doc_summarize_text(text=<текст>) — ТОЛЬКО текст, summary_type НЕ указывай
-     (инструмент сам предложит выбор пользователю)
-
-## Вопросы о конкретных полях
-Проверь <custom_fields> в document_context. Не придумывай данные.
-
-## Общие вопросы
-Если вопрос не связан с EDMS (наука, программирование, общие знания) —
-отвечай как умный ассистент. Используй все свои знания.
-
-## Формат ответов
-- Финальный ответ всегда на русском языке
-- Структурировано и по делу
-- Обращайся к пользователю по имени: {user_name}
-- После каждого tool call формулируй понятный ответ пользователю
-</rules>
-
-<tools_guide>
-ИНСТРУМЕНТ                  КОГДА ИСПОЛЬЗОВАТЬ
-─────────────────────────────────────────────────────────────────
-doc_get_details()           Детали документа если context пустой
-doc_get_file_content        Содержимое вложения по UUID
-doc_summarize_text          Суммаризация текста (после get_file_content)
-doc_compare(id1, id2)       Сравнение двух документов
-employee_search_tool        Поиск ДРУГОГО сотрудника по ФИО/должности/UUID
-introduction_create_tool    Создать ознакомление с документом
-task_create_tool            Создать поручение по документу
-read_local_file_content     Прочитать локальный файл с диска
-
-НЕ использовать инструменты для:
-  × Данные текущего пользователя → из <session>
-  × Поля документа → из <document_context>
-  × Общие знания не связанные с EDMS
-</tools_guide>"""
-
-    # ── Intent-specific guides ────────────────────────────────────────────────
-    _GUIDES: dict[UserIntent, str] = {
+    CONTEXT_SNIPPETS: dict[UserIntent, str] = {
         UserIntent.CREATE_INTRODUCTION: """
 <introduction_guide>
-При "requires_disambiguation": перечисли найденных сотрудников, дождись выбора.
+При "requires_disambiguation" → покажи список найденных сотрудников, дождись выбора.
 Повторный вызов: introduction_create_tool(selected_employee_ids=[uuid1, uuid2])
 </introduction_guide>""",
 
         UserIntent.CREATE_TASK: """
 <task_guide>
-executor_last_names: обязателен (минимум 1).
-planed_date_end: ISO 8601 UTC — "2026-03-01T23:59:59Z".
-Если дата не указана → текущая дата + 7 дней.
-При "requires_disambiguation" → перечисли найденных, дождись выбора.
+executor_last_names: обязателен (минимум 1 фамилия).
+planed_date_end: формат ISO 8601 UTC — "2026-03-01T23:59:59Z".
+Если дата не указана → +7 дней от текущей.
 </task_guide>""",
 
         UserIntent.SUMMARIZE: """
-<summarize_guide>
-Шаг 1: doc_get_file_content(attachment_id=<uuid>) — извлечь текст
-Шаг 2: doc_summarize_text(text=<текст>) — summary_type оставь пустым
-Инструмент сам предложит пользователю выбрать формат (факты / пересказ / тезисы).
-</summarize_guide>""",
+<date_parsing>
+Преобразование дат в ISO 8601:
+- "до 15 февраля" → "2026-02-15T23:59:59Z"
+- "через неделю"  → +7 дней от текущей даты с суффиксом Z (UTC).
+</date_parsing>""",
     }
 
     @classmethod
@@ -460,115 +280,88 @@ planed_date_end: ISO 8601 UTC — "2026-03-01T23:59:59Z".
         cls,
         context: ContextParams,
         intent: UserIntent,
-        document_context_xml: str,
         semantic_xml: str,
     ) -> str:
-        """Assemble the complete system prompt.
+        """Build complete system prompt.
 
         Args:
-            context: Immutable request context.
-            intent: Detected user intent.
-            document_context_xml: ``<document_context>`` from DocumentContextBuilder.
-            semantic_xml: ``<semantic_context>`` from SemanticDispatcher.
+            context: Immutable execution context.
+            intent: Detected user intent from SemanticDispatcher.
+            semantic_xml: XML block from semantic analysis.
 
         Returns:
-            Complete system prompt string.
+            Full system prompt string.
         """
-
-        base = cls._CORE.format(
+        base = cls.CORE_TEMPLATE.format(
             user_name=context.user_name,
-            user_post=context.user_post or "Не указана",
-            user_department=context.user_department or "Не указано",
             current_date=context.current_date,
-            document_id=context.document_id or "Не указан",
-            file_path=context.file_path or "Не загружен",
+            context_ui_id=context.document_id or "Не указан",
+            local_file=context.file_path or "Не загружен",
         )
-        guide = cls._GUIDES.get(intent, "")
-        return base + guide + document_context_xml + semantic_xml
+        snippet = cls.CONTEXT_SNIPPETS.get(intent, "")
+        return base + snippet + semantic_xml
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ContentExtractor — финальный ответ из цепочки сообщений
+# Content Extractor
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class ContentExtractor:
-    """Extracts the final user-facing answer from a LangGraph message chain.
-
-    Priority:
-        1. Last AIMessage без tool_calls — финальный ответ LLM
-        2. Structured text from last ToolMessage JSON
-        3. Any AIMessage with content (fallback)
-        4. Raw ToolMessage (last resort; пропускает JSON-конверты)
+    """Extracts final user-facing content from LangGraph message chain.
     """
 
-    _SKIP_PATTERNS: tuple[str, ...] = (
-        "вызвал инструмент",
-        "tool call",
-        '"name"',
-        '"id"',
-    )
-    _MIN_LENGTH: int = 30
-    _JSON_TEXT_FIELDS: tuple[str, ...] = (
-        "content",
-        "text",
-        "text_preview",
-        "message",
-    )
+    SKIP_PATTERNS: list[str] = ["вызвал инструмент", "tool call", '"name"', '"id"']
+    MIN_CONTENT_LENGTH: int = 50
+    JSON_FIELDS: list[str] = ["content", "text", "text_preview", "message"]
 
     @classmethod
     def extract_final_content(cls, messages: list[BaseMessage]) -> str | None:
-        """Extract final user-facing response.
+        """Extract final user-facing response from message chain.
 
         Args:
-            messages: Full LangGraph message chain.
+            messages: Full message chain from LangGraph state.
 
         Returns:
-            Content string or ``None``.
+            Final content string or None.
         """
-        # 1. Last AIMessage without tool_calls (real final answer)
         for m in reversed(messages):
             if isinstance(m, AIMessage) and m.content:
                 if getattr(m, "tool_calls", None):
-                    continue  # intermediate step
+                    continue
                 content = str(m.content).strip()
-                if not cls._is_artifact(content) and len(content) > cls._MIN_LENGTH:
+                if not cls._is_skip_content(content) and len(content) > cls.MIN_CONTENT_LENGTH:
                     return content
 
-        # 2. Structured text from last ToolMessage
         for m in reversed(messages):
             if isinstance(m, ToolMessage):
-                extracted = cls._from_tool_json(m)
+                extracted = cls._extract_from_tool_message(m)
                 if extracted:
                     return extracted
 
-        # 3. Any AIMessage (fallback)
         for m in reversed(messages):
             if isinstance(m, AIMessage) and m.content:
-                content = str(m.content).strip()
-                if len(content) > cls._MIN_LENGTH:
-                    return content
+                return str(m.content).strip()
 
-        # 4. Raw ToolMessage (last resort — skip JSON envelopes)
         for m in reversed(messages):
             if isinstance(m, ToolMessage):
                 content = str(m.content).strip()
-                if content.startswith('{"status"') or content.startswith('{"error"'):
-                    continue
-                if len(content) > cls._MIN_LENGTH:
+                if len(content) > cls.MIN_CONTENT_LENGTH:
                     return content
 
         return None
 
     @classmethod
-    def extract_last_tool_text(cls, messages: list[BaseMessage]) -> str | None:
-        """Extract raw text from the last ToolMessage for summarization injection.
+    def extract_last_text(cls, messages: list[BaseMessage]) -> str | None:
+        """Extract text content from last ToolMessage for summarization input.
+
+        Looks in data.content, data.text_preview, nested data dict, then raw.
 
         Args:
             messages: Full message chain.
 
         Returns:
-            Text string or ``None``.
+            Extracted text or None.
         """
         for m in reversed(messages):
             if not isinstance(m, ToolMessage):
@@ -577,7 +370,7 @@ class ContentExtractor:
                 raw = str(m.content)
                 if raw.startswith("{"):
                     data = json.loads(raw)
-                    nested = data.get("data") or {}
+                    nested = data.get("data", {}) or {}
                     text = (
                         nested.get("content")
                         or nested.get("text_preview")
@@ -589,17 +382,17 @@ class ContentExtractor:
                         return str(text)
                 if len(raw) > 100:
                     return raw
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError:
                 if len(str(m.content)) > 100:
                     return str(m.content)
         return None
 
     @classmethod
     def clean_json_artifacts(cls, content: str) -> str:
-        """Strip JSON status-envelope wrappers.
+        """Strip JSON status envelope artifacts from LLM-generated content.
 
         Args:
-            content: Raw content string.
+            content: Raw content string possibly wrapped in JSON envelope.
 
         Returns:
             Clean human-readable string.
@@ -624,161 +417,83 @@ class ContentExtractor:
         )
 
     @classmethod
-    def _is_artifact(cls, content: str) -> bool:
-        lower = content.lower()
-        return any(p in lower for p in cls._SKIP_PATTERNS)
+    def _is_skip_content(cls, content: str) -> bool:
+        """Check if content is an internal system artifact, not user-facing.
+
+        Args:
+            content: Content string to check.
+
+        Returns:
+            True if content should be skipped.
+        """
+        return any(skip in content.lower() for skip in cls.SKIP_PATTERNS)
 
     @classmethod
-    def _from_tool_json(cls, message: ToolMessage) -> str | None:
+    def _extract_from_tool_message(cls, message: ToolMessage) -> str | None:
+        """Try to extract meaningful text from ToolMessage JSON payload.
+
+        Args:
+            message: ToolMessage to parse.
+
+        Returns:
+            Extracted text or None.
+        """
         try:
             raw = str(message.content).strip()
             if not raw.startswith("{"):
                 return None
             data = json.loads(raw)
-            nested = data.get("data") or {}
-            for key in cls._JSON_TEXT_FIELDS:
-                val = nested.get(key) or data.get(key)
+            nested = data.get("data", {}) or {}
+            for f in cls.JSON_FIELDS:
+                val = nested.get(f) or data.get(f)
                 if val:
-                    text = str(val).strip()
-                    if len(text) > cls._MIN_LENGTH:
-                        return text
-        except (json.JSONDecodeError, TypeError):
+                    content = str(val).strip()
+                    if len(content) > cls.MIN_CONTENT_LENGTH:
+                        return content
+        except json.JSONDecodeError:
             pass
         return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ToolParameterInjector — инъекция параметров в tool_calls перед выполнением
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class ToolParameterInjector:
-    """Инъектирует обязательные параметры в tool_calls перед исполнением.
-
-    Единственный класс, который знает о правилах инъекции:
-        1. token  — всегда, для всех инструментов
-        2. document_id — для doc_* и task/introduction tools
-        3. UUID file_path → attachment_id conversion для doc_get_file_content
-        4. text — для doc_summarize_text из последнего ToolMessage
-
-    summary_type НЕ инъектируется — SummarizationTool управляет форматом сам.
-    """
-
-    @staticmethod
-    def inject(
-        tool_calls: list[dict],
-        context: ContextParams,
-        last_tool_text: str | None,
-    ) -> list[dict]:
-        """Apply parameter injection to all pending tool_calls.
-
-        Injection rules:
-            1. ``token``                — всегда, для всех инструментов
-            2. ``document_id``          — для doc_* / task / introduction tools
-            3. UUID file_path           → attachment_id (redirect to doc_get_file_content)
-            4. ``text``                 — для doc_summarize_text из последнего ToolMessage
-            5. ``summary_type``         — ТОЛЬКО если context.preselected_summary_type задан.
-               Это сценарий «выбор из UI выпадающего списка»: фронтенд передаёт human_choice
-               в первом запросе (до suspend графа), агент инъектирует тип сразу.
-               Иначе — SummarizationTool сам предлагает выбор (requires_choice).
-
-        Args:
-            tool_calls: Raw tool_calls list from AIMessage.
-            context: Immutable execution context.
-            last_tool_text: Text from last ToolMessage (for summarization).
-
-        Returns:
-            New list of tool_calls with injected parameters.
-        """
-        fixed: list[dict] = []
-
-        for tc in tool_calls:
-            t_name: str = tc["name"]
-            t_args: dict = dict(tc["args"])
-            t_id: str = tc["id"]
-
-            # 1. JWT — всегда
-            t_args["token"] = context.user_token
-
-            # 2. document_id — для doc_*, task_create_tool, introduction_create_tool
-            if context.document_id and (
-                t_name.startswith("doc_")
-                or t_name in ("introduction_create_tool", "task_create_tool")
-                or "document_id" in t_args
-            ):
-                if not t_args.get("document_id"):
-                    t_args["document_id"] = context.document_id
-
-            # 3. UUID file_path → attachment_id
-            clean_path = str(context.file_path or "").strip()
-            if _UUID_RE.match(clean_path) and t_name == "read_local_file_content":
-                t_name = "doc_get_file_content"
-                t_args["attachment_id"] = clean_path
-                t_args.pop("file_path", None)
-                log.info(
-                    "uuid_path_to_attachment_converted",
-                    attachment_id_prefix=clean_path[:8],
-                )
-
-            # 4 + 5. Параметры doc_summarize_text
-            if t_name == "doc_summarize_text":
-                # 4. Текст из последнего ToolMessage
-                if last_tool_text and not t_args.get("text"):
-                    t_args["text"] = str(last_tool_text)
-
-                # 5. Preselected summary_type (выбор из UI до запуска графа).
-                if not t_args.get("summary_type") and context.preselected_summary_type:
-                    t_args["summary_type"] = context.preselected_summary_type
-                    log.info(
-                        "preselected_summary_type_injected",
-                        summary_type=context.preselected_summary_type,
-                    )
-
-            fixed.append({"name": t_name, "args": t_args, "id": t_id})
-
-        return fixed
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# AgentStateManager — тонкая обёртка над CompiledStateGraph API
+# Agent State Manager
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class AgentStateManager:
-    """Thin wrapper encapsulating LangGraph CompiledStateGraph API.
+    """Thin wrapper around CompiledStateGraph for state operations.
 
-    Provides: get_state / update_state / invoke.
-    Используется исключительно в EdmsDocumentAgent._orchestrate().
+    Provides get / update / invoke methods used by EdmsDocumentAgent._orchestrate().
     """
 
     def __init__(self, graph: CompiledStateGraph, checkpointer: MemorySaver) -> None:
-        """Initialize.
+        """Initialize state manager.
 
         Args:
             graph: Compiled LangGraph StateGraph.
             checkpointer: MemorySaver for in-process persistence.
 
         Raises:
-            ValueError: When either argument is ``None``.
+            ValueError: When graph or checkpointer is None.
         """
         if graph is None:
-            raise ValueError("graph cannot be None")
+            raise ValueError("Graph cannot be None")
         if checkpointer is None:
-            raise ValueError("checkpointer cannot be None")
-        self._graph = graph
-        self._checkpointer = checkpointer
+            raise ValueError("Checkpointer cannot be None")
+        self.graph = graph
+        self.checkpointer = checkpointer
 
     async def get_state(self, thread_id: str) -> Any:
-        """Retrieve current StateSnapshot for a thread.
+        """Retrieve current state snapshot for a thread.
 
         Args:
             thread_id: LangGraph session identifier.
 
         Returns:
-            ``StateSnapshot`` with ``.values`` and ``.next``.
+            StateSnapshot with .values and .next.
         """
         config = {"configurable": {"thread_id": thread_id}}
-        return await self._graph.aget_state(config)
+        return await self.graph.aget_state(config)
 
     async def update_state(
         self,
@@ -786,17 +501,15 @@ class AgentStateManager:
         messages: list[BaseMessage],
         as_node: str = "agent",
     ) -> None:
-        """Inject messages into state (parameter injection pattern).
+        """Inject messages into state (human-in-the-loop parameter injection).
 
         Args:
             thread_id: LangGraph session identifier.
-            messages: Messages to inject.
+            messages: Messages to inject into state.
             as_node: Node context for the update.
         """
         config = {"configurable": {"thread_id": thread_id}}
-        await self._graph.aupdate_state(
-            config, {"messages": messages}, as_node=as_node
-        )
+        await self.graph.aupdate_state(config, {"messages": messages}, as_node=as_node)
 
     async def invoke(
         self,
@@ -804,38 +517,155 @@ class AgentStateManager:
         thread_id: str,
         timeout: float = 120.0,
     ) -> None:
-        """Run one graph step with timeout.
+        """Run graph with timeout protection.
 
         Args:
-            inputs: Graph inputs (``None`` = resume from interrupt).
+            inputs: Graph inputs (None to resume from interrupt_before["tools"]).
             thread_id: LangGraph session identifier.
             timeout: Execution timeout in seconds.
 
         Raises:
-            asyncio.TimeoutError: On timeout.
+            asyncio.TimeoutError: When execution exceeds timeout.
         """
         config = {"configurable": {"thread_id": thread_id}}
         await asyncio.wait_for(
-            self._graph.ainvoke(inputs, config=config),
+            self.graph.ainvoke(inputs, config=config),
             timeout=timeout,
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EdmsDocumentAgent — production LangGraph orchestrator
-# ─────────────────────────────────────────────────────────────────────────────
+_UUID_PAT = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+_SUMMARY_TYPE_LABELS: dict[str, str] = {
+    "extractive": "ключевые факты",
+    "abstractive": "краткий пересказ",
+    "thesis": "тезисный план",
+}
+
+_CHOICE_NORM: dict[str, str] = {
+    "1": "extractive", "факты": "extractive", "ключевые факты": "extractive",
+    "extractive": "extractive",
+    "2": "abstractive", "пересказ": "abstractive", "краткий пересказ": "abstractive",
+    "abstractive": "abstractive",
+    "3": "thesis", "тезисы": "thesis", "тезисный план": "thesis",
+    "thesis": "thesis",
+}
 
 
-class EdmsDocumentAgent(AbstractAgent):
-    """Production-grade LangGraph agent for EDMS document operations.
+def _normalize_human_choice(raw: str) -> str:
+    """Normalize human_choice to canonical SummaryType value.
+
+    Args:
+        raw: Raw string from frontend (e.g. "2", "abstractive", "Краткий пересказ").
+
+    Returns:
+        Canonical value: "extractive" | "abstractive" | "thesis".
+    """
+    return _CHOICE_NORM.get(raw.strip().lower(), raw.strip())
+
+
+def _build_forced_pipeline_message(
+    file_path: str | None,
+    summary_type: str,
+    document_id: str | None,
+    original: str | None,
+) -> str:
+    """Build mandatory two-stage pipeline instruction for LLM.
+
+
+    Args:
+        file_path: Local path or EDMS attachment UUID (may be None).
+        summary_type: Canonical SummaryType string.
+        document_id: Active document UUID (fallback if no file_path).
+        original: Original user message text for context.
+
+    Returns:
+        Strict two-stage pipeline instruction string for LLM HumanMessage.
+    """
+    type_label = _SUMMARY_TYPE_LABELS.get(summary_type, summary_type)
+
+    if file_path and _UUID_PAT.match(str(file_path)):
+        stage1 = (
+            f"Шаг 1: Вызови doc_get_file_content(attachment_id=\'{file_path}\') "
+            f"для получения текста вложения."
+        )
+        source = f"вложение EDMS ({file_path[:8]}...)"
+    elif file_path:
+        from pathlib import Path as _Path
+        fname = _Path(file_path).name
+        stage1 = (
+            f"Шаг 1: Вызови read_local_file_content(file_path=\'{file_path}\') "
+            f"для чтения файла «{fname}». "
+            f"НЕ используй doc_get_file_content."
+        )
+        source = f"локальный файл «{fname}»"
+    elif document_id:
+        import re as _re
+        _orig = str(original or "").strip()
+
+        _fname_match = _re.search(
+            r"(?:вложение|файл|Анализ файла).*?«(.+?)»|"
+            r"(?:Анализ файла|файл):\s*(.+?)(?:\s*$)",
+            _orig,
+            _re.IGNORECASE,
+        )
+        target_name: str | None = None
+        if _fname_match:
+            target_name = (_fname_match.group(1) or _fname_match.group(2) or "").strip() or None
+
+        if not target_name:
+            _bare = _re.match(
+                r"^([^/\\<>:\"|?*\r\n]+\.(?:docx?|pdf|txt|rtf|html?|xlsx?|pptx?))$",
+                _orig,
+                _re.IGNORECASE,
+            )
+            if _bare:
+                target_name = _bare.group(1).strip()
+
+        if target_name:
+            stage1 = (
+                f"Шаг 1: Вызови doc_get_details() чтобы получить список вложений. "
+                f"Затем вызови doc_get_file_content с attachment_id вложения "
+                f"с именем «{target_name}» (ищи совпадение по имени файла). "
+                f"НЕ бери первое вложение автоматически — найди именно «{target_name}»."
+            )
+            source = f"вложение «{target_name}»"
+        else:
+            stage1 = (
+                f"Шаг 1: Вызови doc_get_file_content(document_id=\'{document_id}\') "
+                f"для получения текста первого вложения."
+            )
+            source = "первое вложение документа"
+    else:
+        return original or "Файл для анализа не указан."
+
+    stage2 = (
+        f"Шаг 2: Вызови doc_summarize_text(text=<текст из шага 1>, "
+        f"summary_type=\'{summary_type}\') — формат «{type_label}»."
+    )
+    hint = f"\n\nЗапрос: {original}" if original else ""
+
+    return (
+        f"Выполни анализ {source} в формате «{type_label}».\n\n"
+        f"{stage1}\n{stage2}{hint}\n\n"
+        f"[ОБЯЗАТЕЛЬНО]: Выполни оба шага. "
+        f"НЕ вызывай doc_get_details — нужно содержимое файла, не метаданные."
+    )
+
+
+class EdmsDocumentAgent:
+    """Production-ready multi-agent system for EDMS document operations.
 
     Attributes:
-        config: Agent behavior configuration (``AgentConfig``).
-        model: LangChain chat model.
-        tools: List of ``AbstractEdmsTool`` instances.
-        document_repo: Port for document metadata.
-        dispatcher: Semantic intent classifier.
-        state_manager: LangGraph state wrapper.
+        config: Agent behavior configuration (AgentConfig).
+        model: LLM with bound tools.
+        tools: List of registered AbstractEdmsTool instances.
+        document_repo: Repository for document metadata fetching.
+        dispatcher: SemanticDispatcher for intent analysis.
+        state_manager: AgentStateManager wrapping compiled LangGraph graph.
     """
 
     def __init__(
@@ -844,38 +674,36 @@ class EdmsDocumentAgent(AbstractAgent):
         document_repo: IDocumentRepository | None = None,
         semantic_dispatcher: SemanticDispatcher | None = None,
     ) -> None:
-        """Initialize agent with optional dependency injection.
+        """Initialize EDMS Document Agent.
 
-        All dependencies have safe defaults — zero-argument construction works.
+        Compared to old agent: takes AgentConfig instead of class constants,
+        uses _create_tools() DI factory instead of global all_tools import.
 
         Args:
-            config: Agent configuration. Defaults to ``AgentConfig()``.
-            document_repo: Document metadata port.
-                Defaults to ``DocumentRepositoryAdapter()``.
-            semantic_dispatcher: Intent classifier.
-                Defaults to ``SemanticDispatcher()``.
+            config: Agent configuration (defaults if None).
+            document_repo: Document repository (creates default if None).
+            semantic_dispatcher: Semantic analyzer (creates default if None).
 
         Raises:
-            RuntimeError: On initialization or graph compilation failure.
+            RuntimeError: When initialization or graph compilation fails.
         """
         try:
-            self.config: AgentConfig = config or AgentConfig()
+            self.config = config or AgentConfig(timeout_seconds=300.0)
             self.model = get_chat_model()
-            self.document_repo: IDocumentRepository = (
-                document_repo or DocumentRepositoryAdapter()
-            )
-            self.dispatcher: SemanticDispatcher = (
-                semantic_dispatcher or SemanticDispatcher()
-            )
+            self.document_repo = document_repo or DocumentRepository()
+            self.dispatcher = semantic_dispatcher or SemanticDispatcher()
 
             log.debug("base_components_initialized")
 
             self.tools = self._create_tools()
             self._checkpointer = MemorySaver()
-            self._graph = self._build_graph()
+            self._compiled_graph = self._build_graph()
+
+            if self._compiled_graph is None:
+                raise RuntimeError("Graph compilation returned None")
 
             self.state_manager = AgentStateManager(
-                graph=self._graph,
+                graph=self._compiled_graph,
                 checkpointer=self._checkpointer,
             )
 
@@ -891,16 +719,16 @@ class EdmsDocumentAgent(AbstractAgent):
             log.error("edms_agent_init_failed", error=str(exc), exc_info=True)
             raise RuntimeError(f"Agent initialization failed: {exc}") from exc
 
-    # ── Initialization helpers ────────────────────────────────────────────────
+    # ── Initialization Helpers ────────────────────────────────────────────────
 
     def _create_tools(self) -> list:
-        """Instantiate all EDMS tools via DI factory.
+        """Create all tools via DI factory.
 
-        Lazy imports ensure infrastructure is loaded only at startup.
-        ``storage=None``: AttachmentTool downloads via EdmsAttachmentClient REST API.
+        No MinIO/storage required — AttachmentTool downloads directly via
+        EDMS REST API (EdmsAttachmentClient.get_content()).
 
         Returns:
-            List of ``AbstractEdmsTool`` instances.
+            List of instantiated AbstractEdmsTool objects (8-9 tools).
         """
         from ...domain.services.appeal_validator import AppealValidator
         from ...domain.services.document_comparer import DocumentComparer
@@ -928,18 +756,17 @@ class EdmsDocumentAgent(AbstractAgent):
             document_comparer=DocumentComparer(),
             appeal_validator=AppealValidator(),
             task_assigner=TaskAssigner(),
-            storage=None,
-            attachment_client=None,
+            # storage=None → AttachmentTool использует EdmsAttachmentClient напрямую
         )
 
         log.info("tools_initialized", count=len(tools), names=[t.name for t in tools])
         return tools
 
     def _try_create_nlp_extractor(self) -> Any | None:
-        """Create NLP extractor with graceful degradation.
+        """Try to create NLP extractor. Returns None on failure (graceful degradation).
 
         Returns:
-            ``AppealExtractor`` or ``None``.
+            AppealExtractor instance or None.
         """
         try:
             from ...infrastructure.nlp.extractors.appeal_extractor import AppealExtractor
@@ -949,10 +776,10 @@ class EdmsDocumentAgent(AbstractAgent):
             return None
 
     def health_check(self) -> dict[str, Any]:
-        """Return component health dict for monitoring/readiness probes.
+        """Return component health status.
 
         Returns:
-            Dict with boolean flags per component.
+            Dict with boolean/count flags per component.
         """
         return {
             "model": self.model is not None,
@@ -960,75 +787,65 @@ class EdmsDocumentAgent(AbstractAgent):
             "tool_names": [t.name for t in self.tools],
             "document_repo": self.document_repo is not None,
             "dispatcher": self.dispatcher is not None,
-            "graph": self._graph is not None,
-            "state_manager": self.state_manager is not None,
+            "graph": hasattr(self, "_compiled_graph") and self._compiled_graph is not None,
+            "state_manager": hasattr(self, "state_manager") and self.state_manager is not None,
             "max_iterations": self.config.max_iterations,
             "execution_timeout": self.config.execution_timeout,
         }
 
-    # ── Graph construction ────────────────────────────────────────────────────
+    # ── Graph Construction ────────────────────────────────────────────────────
 
     def _build_graph(self) -> CompiledStateGraph:
-        """Build and compile the LangGraph workflow.
-
-        Nodes:
-            agent:      LLM call — increments graph_iterations.
-            tools:      ToolNode — исполнение tool_calls.
-            validator:  Проверяет результат; инъектирует уведомление при ошибке.
+        """Build and compile LangGraph workflow.
 
         Returns:
-            ``CompiledStateGraph`` с ``interrupt_before=["tools"]``.
+            CompiledStateGraph with interrupt_before=["tools"].
 
         Raises:
-            RuntimeError: On compilation failure.
+            RuntimeError: When graph compilation fails.
         """
         workflow = StateGraph(AgentStateWithCounter)
 
-        # ── Node: agent ───────────────────────────────────────────────────────
+        # ── Node: agent (LLM call) ────────────────────────────────────────────
 
         async def call_model(state: AgentStateWithCounter) -> dict:
-            """Call LLM with bound tools.
+            """Invoke LLM with bound tools.
 
-            Passes exactly ONE SystemMessage (the latest) + all non-system
-            messages. Increments ``graph_iterations`` via operator.add.
+            Increments graph_iterations by 1 via operator.add reducer.
 
             Args:
                 state: Current graph state.
 
             Returns:
-                Dict with AIMessage and graph_iterations increment.
+                Dict with updated messages and incremented graph_iterations.
             """
             model_with_tools = self.model.bind_tools(self.tools)
 
-            all_msgs = state["messages"]
-            sys_msgs = [m for m in all_msgs if isinstance(m, SystemMessage)]
-            non_sys = [m for m in all_msgs if not isinstance(m, SystemMessage)]
-            llm_input = ([sys_msgs[-1]] if sys_msgs else []) + non_sys
+            sys_msgs = [m for m in state["messages"] if isinstance(m, SystemMessage)]
+            non_sys = [m for m in state["messages"] if not isinstance(m, SystemMessage)]
+            final_messages = ([sys_msgs[-1]] if sys_msgs else []) + non_sys
 
-            response = await model_with_tools.ainvoke(llm_input)
+            response = await model_with_tools.ainvoke(final_messages)
             return {"messages": [response], "graph_iterations": 1}
 
-        # ── Node: validator ───────────────────────────────────────────────────
+        # ── Node: validator (tool result check) ──────────────────────────────
 
-        async def validate_tool_result(state: AgentStateWithCounter) -> dict:
-            """Validate tool execution result; inject error notification if needed.
+        async def validator(state: AgentStateWithCounter) -> dict:
+            """Validate tool execution result.
 
-            Trigger conditions:
-                - Empty result (None / {} / empty string)
-                - BOTH "error" AND "exception" in content (avoids false positives)
-
-            Skipped when ``config.enable_tool_validation`` is False.
+            Injects error notification into state when tool returned
+            empty result or raised an exception. Agent then generates
+            user-friendly error message.
 
             Args:
-                state: Current state after tool execution.
+                state: Current graph state after tool execution.
 
             Returns:
-                Dict with optional system HumanMessage.
+                Dict with optional error notification message.
             """
-            if not self.config.enable_tool_validation:
-                return {"messages": []}
+            messages = state["messages"]
+            last_msg = messages[-1]
 
-            last_msg = state["messages"][-1]
             if not isinstance(last_msg, ToolMessage):
                 return {"messages": []}
 
@@ -1038,66 +855,61 @@ class EdmsDocumentAgent(AbstractAgent):
                 return {
                     "messages": [
                         HumanMessage(
-                            content=(
-                                "[СИСТЕМНОЕ УВЕДОМЛЕНИЕ]: Инструмент вернул пустой результат. "
-                                "Сообщи пользователю понятным языком."
-                            )
+                            content="[СИСТЕМНОЕ УВЕДОМЛЕНИЕ]: Инструмент вернул пустой результат. "
+                                    "Сообщи пользователю понятным языком."
                         )
                     ]
                 }
 
-            c_lower = content.lower()
-            if "error" in c_lower and "exception" in c_lower:
+            if "error" in content.lower() and "exception" in content.lower():
                 return {
                     "messages": [
                         HumanMessage(
-                            content=(
-                                f"[СИСТЕМНОЕ УВЕДОМЛЕНИЕ]: Техническая ошибка: "
-                                f"{content[:400]}"
-                            )
+                            content=f"[СИСТЕМНОЕ УВЕДОМЛЕНИЕ]: Техническая ошибка инструмента: "
+                                    f"{content[:500]}"
                         )
                     ]
                 }
 
             return {"messages": []}
 
-        # ── Edges ─────────────────────────────────────────────────────────────
+        # ── Conditional Edges ─────────────────────────────────────────────────
 
         def should_continue(state: AgentStateWithCounter) -> str:
-            """Route agent → tools or END.
+            """Route from agent: tools or END.
 
             NOTE: AgentStateWithCounter MUST be at module level.
-            LangGraph resolves this type from module globals().
+            LangGraph resolves this type hint from module globalns.
 
             Args:
-                state: Current graph state.
+                state: Current state with messages.
 
             Returns:
-                ``"tools"`` or ``END``.
+                "tools" if last AIMessage has tool_calls, else END.
             """
             last_msg = state["messages"][-1]
-            if (
-                isinstance(last_msg, AIMessage)
-                and getattr(last_msg, "tool_calls", None)
-            ):
+            if isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None):
                 return "tools"
             return END
 
-        def route_after_validator(state: AgentStateWithCounter) -> str:
-            """Route validator → agent or END (infinite loop guard).
+        def after_validator(state: AgentStateWithCounter) -> str:
+            """Route from validator: continue agent or stop (infinite loop guard).
+
+            Uses graph_iterations counter from AgentStateWithCounter state.
+            MAX_GRAPH_ITERATIONS is a module-level constant — visible here.
 
             Args:
-                state: State with ``graph_iterations`` counter.
+                state: Current state with graph_iterations counter.
 
             Returns:
-                ``"agent"`` or ``END``.
+                "agent" to continue, or END when max iterations reached.
             """
             iterations = state.get("graph_iterations", 0)
-            if iterations >= _MAX_GRAPH_ITERATIONS:
+            if iterations >= MAX_GRAPH_ITERATIONS:
                 log.warning(
                     "graph_max_iterations_reached",
                     iterations=iterations,
-                    max=_MAX_GRAPH_ITERATIONS,
+                    max=MAX_GRAPH_ITERATIONS,
                 )
                 return END
             return "agent"
@@ -1106,7 +918,7 @@ class EdmsDocumentAgent(AbstractAgent):
 
         workflow.add_node("agent", call_model)
         workflow.add_node("tools", ToolNode(self.tools))
-        workflow.add_node("validator", validate_tool_result)
+        workflow.add_node("validator", validator)
 
         workflow.add_edge(START, "agent")
         workflow.add_conditional_edges(
@@ -1114,7 +926,7 @@ class EdmsDocumentAgent(AbstractAgent):
         )
         workflow.add_edge("tools", "validator")
         workflow.add_conditional_edges(
-            "validator", route_after_validator, {"agent": "agent", END: END}
+            "validator", after_validator, {"agent": "agent", END: END}
         )
 
         try:
@@ -1126,66 +938,46 @@ class EdmsDocumentAgent(AbstractAgent):
             return compiled
         except Exception as exc:
             log.error("graph_compilation_failed", error=str(exc), exc_info=True)
-            raise RuntimeError(f"Graph compilation failed: {exc}") from exc
+            raise RuntimeError(f"Failed to compile graph: {exc}") from exc
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    async def chat(self, request: AgentRequest) -> AgentResponse:
-        """Process user message — main entry point.
+    async def chat(self, request: AgentRequest) -> dict:
+        """Process user message through the full agent pipeline.
+
+        Difference from old agent:
+            Old: chat(message, user_token, ...) — positional/keyword args
+            New: chat(request: AgentRequest)    — single validated DTO
+
+        Pipeline:
+            1. Build immutable ContextParams from request
+            2. Check for human-in-the-loop continuation (human_choice)
+            3. Fetch document metadata for semantic analysis
+            4. SemanticDispatcher → intent + refined query
+            5. Build system prompt (PromptBuilder)
+            6. _orchestrate() → LangGraph execution loop
 
         Args:
-            request: Validated ``AgentRequest`` from interface layer.
+            request: Validated AgentRequest DTO.
 
         Returns:
-            ``AgentResponse`` — ВСЕГДА, даже при ошибках.
+            AgentResponse dict (status + content/message + optional action_type).
         """
         try:
             context = await self._build_context(request)
+            state = await self.state_manager.get_state(context.thread_id)
 
-            # ── Human-in-the-loop: resume suspended graph ─────────────────────
-            if request.human_choice:
-                normalized_choice = _normalize_choice(request.human_choice)
-                state = await self.state_manager.get_state(context.thread_id)
-                if state.next:
-                    # ── Сценарий A: resume suspended графа ───────────────────
-                    log.info(
-                        "human_choice_resume",
-                        raw=request.human_choice,
-                        normalized=normalized_choice,
-                        thread_id=context.thread_id,
-                    )
-                    return await self._handle_human_choice(context, normalized_choice)
-                else:
-                    # ── Сценарий B: preselected из UI (1 шаг) ────────────────
-                    log.info(
-                        "human_choice_preselected",
-                        raw=request.human_choice,
-                        normalized=normalized_choice,
-                        thread_id=context.thread_id,
-                    )
-                    context = ContextParams(
-                        user_token=context.user_token,
-                        document_id=context.document_id,
-                        file_path=context.file_path,
-                        thread_id=context.thread_id,
-                        user_name=context.user_name,
-                        user_first_name=context.user_first_name,
-                        user_last_name=context.user_last_name,
-                        user_department=context.user_department,
-                        user_post=context.user_post,
-                        current_date=context.current_date,
-                        preselected_summary_type=normalized_choice,
-                    )
+            if request.human_choice and state.next:
+                return await self._handle_human_choice(context, request.human_choice)
 
-            # ── Fetch document (graceful: None if unavailable) ─────────────────
-            document: Document | None = None
+            document = None
             if context.document_id:
                 document = await self.document_repo.get_document(
                     context.user_token, context.document_id
                 )
 
-            # ── Semantic analysis ─────────────────────────────────────────────
             semantic_ctx = self.dispatcher.build_context(request.message, document)
+
             log.info(
                 "semantic_analysis_complete",
                 intent=semantic_ctx.query.intent.value,
@@ -1193,46 +985,46 @@ class EdmsDocumentAgent(AbstractAgent):
                 thread_id=context.thread_id,
             )
 
-            # ── Assemble system prompt ────────────────────────────────────────
-            system_prompt = PromptBuilder.build(
-                context=context,
-                intent=semantic_ctx.query.intent,
-                document_context_xml=DocumentContextBuilder.build(document),
-                semantic_xml=self._build_semantic_xml(semantic_ctx),
-            )
+            semantic_xml = self._build_semantic_xml(semantic_ctx)
+            full_prompt = PromptBuilder.build(context, semantic_ctx.query.intent, semantic_xml)
+
+            if request.human_choice and not state.next:
+                normalized_type = _normalize_human_choice(request.human_choice)
+                human_content = _build_forced_pipeline_message(
+                    file_path=context.file_path,
+                    summary_type=normalized_type,
+                    document_id=context.document_id,
+                    original=request.message,
+                )
+                log.info(
+                    "forced_pipeline_injected",
+                    summary_type=normalized_type,
+                    file_path=str(context.file_path or "")[:40],
+                    thread_id=context.thread_id,
+                )
+            elif context.file_path and not _UUID_PAT.match(str(context.file_path)):
+                from pathlib import Path as _Path
+                fname = _Path(str(context.file_path)).name
+                base = request.message or f"Проанализируй файл «{fname}»"
+                human_content = (
+                    f"{base}\n\n"
+                    f"[ОБЯЗАТЕЛЬНО]: Используй read_local_file_content("
+                    f"file_path=\'{context.file_path}\') — НЕ doc_get_file_content."
+                )
+            else:
+                human_content = semantic_ctx.query.refined
 
             inputs: dict[str, Any] = {
                 "messages": [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=semantic_ctx.query.refined),
+                    SystemMessage(content=full_prompt),
+                    HumanMessage(content=human_content),
                 ]
             }
 
-            # ── Per-request isolated LangGraph thread ─────────────────────────
-            request_thread_id = f"{context.thread_id}_req_{uuid.uuid4().hex[:8]}"
-            log.debug(
-                "request_thread_created",
-                base_thread=context.thread_id,
-                request_thread=request_thread_id,
-            )
-
-            request_context = ContextParams(
-                user_token=context.user_token,
-                document_id=context.document_id,
-                file_path=context.file_path,
-                thread_id=request_thread_id,
-                user_name=context.user_name,
-                user_first_name=context.user_first_name,
-                user_last_name=context.user_last_name,
-                user_department=context.user_department,
-                user_post=context.user_post,
-                current_date=context.current_date,
-                preselected_summary_type=context.preselected_summary_type,
-            )
-
             return await self._orchestrate(
-                context=request_context,
+                context=context,
                 inputs=inputs,
+                is_choice_active=False,
                 iteration=0,
             )
 
@@ -1241,30 +1033,26 @@ class EdmsDocumentAgent(AbstractAgent):
             return AgentResponse(
                 status=AgentStatus.ERROR,
                 message=f"Ошибка обработки запроса: {exc}",
-            )
+            ).model_dump()
 
-    # ── Human-in-the-loop ─────────────────────────────────────────────────────
+    # ── Human-in-the-Loop ─────────────────────────────────────────────────────
 
     async def _handle_human_choice(
         self,
         context: ContextParams,
         human_choice: str,
-    ) -> AgentResponse:
-        """Resume suspended graph after user's selection.
+    ) -> dict:
+        """Handle user's disambiguation or format selection.
 
-        Injects ``human_choice`` into the pending tool_call args,
-        then resumes via ``_orchestrate(inputs=None)``.
-
-        Supported:
-            - doc_summarize_text: injects ``summary_type``
-            - Employee disambiguation: propagated as-is
+        Injects human_choice into pending tool_call args and resumes graph.
+        Used for: summarize format selection, employee disambiguation.
 
         Args:
-            context: Context with ORIGINAL thread_id (suspension lives there).
-            human_choice: User's selection (e.g. ``"extractive"``).
+            context: Immutable execution context.
+            human_choice: User's selection string (e.g. 'extractive', 'thesis').
 
         Returns:
-            ``AgentResponse`` after resumed execution.
+            AgentResponse dict.
         """
         state = await self.state_manager.get_state(context.thread_id)
         last_msg = state.values["messages"][-1]
@@ -1295,35 +1083,41 @@ class EdmsDocumentAgent(AbstractAgent):
         return await self._orchestrate(
             context=context,
             inputs=None,
+            is_choice_active=True,
             iteration=0,
         )
 
-    # ── Orchestration loop ────────────────────────────────────────────────────
+    # ── Orchestration Loop ────────────────────────────────────────────────────
 
     async def _orchestrate(
         self,
         context: ContextParams,
         inputs: dict[str, Any] | None,
+        is_choice_active: bool = False,
         iteration: int = 0,
-    ) -> AgentResponse:
-        """LangGraph orchestration loop with ToolParameterInjector.
+    ) -> dict:
+        """Main LangGraph orchestration loop with automatic parameter injection.
 
-        На каждой паузе ``interrupt_before["tools"]`` вызывает
-        ``ToolParameterInjector.inject()`` для добавления token / document_id /
-        text в tool_calls, затем возобновляет граф.
+        On each interrupt_before["tools"] pause injects:
+            - token: JWT for all tool calls
+            - document_id: for doc_* and task/introduction tools
+            - attachment_id: when file_path is UUID (UUID → attachment conversion)
+            - text + summary_type: for doc_summarize_text (via NLPHelperService)
 
-        Guards:
-            1. ``iteration > config.max_iterations`` — application layer
-            2. ``graph_iterations >= _MAX_GRAPH_ITERATIONS`` — graph layer
+        Recursion protected by:
+            1. iteration > config.max_iterations (application layer guard)
+            2. graph_iterations >= MAX_GRAPH_ITERATIONS (graph layer guard)
 
         Args:
             context: Immutable execution context.
-            inputs: Graph inputs (``None`` = resume from interrupt).
+            inputs: Graph inputs dict (None = resume from interrupt).
+            is_choice_active: True after user made a disambiguation choice.
             iteration: Recursion depth counter.
 
         Returns:
-            ``AgentResponse``.
+            AgentResponse dict.
         """
+        # ── Iteration Guard (application layer) ──────────────────────────────
         if iteration > self.config.max_iterations:
             log.error(
                 "max_iterations_exceeded",
@@ -1333,10 +1127,10 @@ class EdmsDocumentAgent(AbstractAgent):
             return AgentResponse(
                 status=AgentStatus.ERROR,
                 message="Превышен лимит итераций обработки.",
-            )
+            ).model_dump()
 
         try:
-            # ── Execute graph step ────────────────────────────────────────────
+            # ── Graph Execution ───────────────────────────────────────────────
             await self.state_manager.invoke(
                 inputs=inputs,
                 thread_id=context.thread_id,
@@ -1344,7 +1138,7 @@ class EdmsDocumentAgent(AbstractAgent):
             )
 
             state = await self.state_manager.get_state(context.thread_id)
-            messages: list[BaseMessage] = state.values.get("messages", [])
+            messages = state.values.get("messages", [])
 
             log.debug(
                 "state_snapshot",
@@ -1359,42 +1153,11 @@ class EdmsDocumentAgent(AbstractAgent):
                 return AgentResponse(
                     status=AgentStatus.ERROR,
                     message="Пустое состояние агента.",
-                )
+                ).model_dump()
 
             last_msg = messages[-1]
 
-            # ── Detect requires_choice from ToolMessage ────────────────────────
-            if isinstance(last_msg, ToolMessage):
-                try:
-                    raw = str(last_msg.content).strip()
-                    if raw.startswith("{"):
-                        tool_data = json.loads(raw)
-                        if tool_data.get("status") == "requires_choice":
-                            choices_data = tool_data.get("data", {})
-                            options = choices_data.get("options", [])
-                            message_text = tool_data.get(
-                                "message", "Выберите формат анализа:"
-                            )
-
-                            log.info(
-                                "requires_choice_detected",
-                                thread_id=context.thread_id,
-                                options_count=len(options),
-                            )
-
-                            return AgentResponse(
-                                status=AgentStatus.REQUIRES_ACTION,
-                                message=message_text,
-                                action_type=ActionType.SUMMARIZE_SELECTION,
-                                metadata={
-                                    _CHOICE_THREAD_KEY: context.thread_id,
-                                    "options": options,
-                                },
-                            )
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-            # ── Graph done → extract final answer ─────────────────────────────
+            # ── Graph Done — финальный ответ ──────────────────────────────────
             if (
                 not state.next
                 or not isinstance(last_msg, AIMessage)
@@ -1412,21 +1175,112 @@ class EdmsDocumentAgent(AbstractAgent):
                     return AgentResponse(
                         status=AgentStatus.SUCCESS,
                         content=final,
-                    )
+                    ).model_dump()
 
                 return AgentResponse(
                     status=AgentStatus.SUCCESS,
                     content="Анализ завершён.",
+                ).model_dump()
+
+            last_text = ContentExtractor.extract_last_text(messages)
+            fixed_calls = []
+
+            for tc in last_msg.tool_calls:
+                t_name: str = tc["name"]
+                t_args: dict = dict(tc["args"])
+                t_id: str = tc["id"]
+
+                t_args["token"] = context.user_token
+
+                if context.document_id and (
+                    t_name.startswith("doc_")
+                    or t_name in ("introduction_create_tool", "task_create_tool")
+                    or "document_id" in t_args
+                ):
+                    if not t_args.get("document_id"):
+                        t_args["document_id"] = context.document_id
+
+                clean_path = str(context.file_path or "").strip()
+                is_uuid = bool(
+                    re.match(
+                        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                        clean_path,
+                        re.I,
+                    )
                 )
+                if is_uuid and t_name == "read_local_file_content":
+                    t_name = "doc_get_file_content"
+                    t_args["attachment_id"] = clean_path
+                    t_args.pop("file_path", None)
+                    log.info(
+                        "uuid_to_attachment_converted",
+                        attachment_id_prefix=clean_path[:8],
+                    )
 
-            # ── Graph paused → inject parameters → resume ─────────────────────
-            last_tool_text = ContentExtractor.extract_last_tool_text(messages)
+                if (
+                    t_name == "read_local_file_content"
+                    and clean_path
+                    and not is_uuid
+                ):
+                    t_args["file_path"] = clean_path
+                    log.debug(
+                        "local_file_path_injected",
+                        tool=t_name,
+                        path_suffix=clean_path[-40:],
+                    )
 
-            fixed_calls = ToolParameterInjector.inject(
-                tool_calls=last_msg.tool_calls,
-                context=context,
-                last_tool_text=last_tool_text,
-            )
+                if t_name == "doc_get_file_content":
+                    att_id = str(t_args.get("attachment_id") or "").strip()
+                    doc_id = str(context.document_id or "").strip()
+
+                    if att_id and doc_id and att_id == doc_id:
+                        log.warning(
+                            "attachment_id_equals_document_id_cleared",
+                            attachment_id=att_id[:8],
+                            document_id=doc_id[:8],
+                        )
+                        t_args.pop("attachment_id", None)
+
+                    elif att_id and doc_id and len(att_id) == len(doc_id) == 36:
+                        # Считаем совпадающие символы
+                        matching = sum(a == b for a, b in zip(att_id, doc_id))
+                        if matching >= 32:
+                            log.warning(
+                                "attachment_id_hallucination_cleared",
+                                attachment_id=att_id[:8],
+                                document_id=doc_id[:8],
+                                matching_chars=matching,
+                            )
+                            t_args.pop("attachment_id", None)
+
+                # 4. Суммаризация — инъекция текста + умный выбор формата
+                if t_name == "doc_summarize_text":
+                    if last_text and not t_args.get("text"):
+                        raw_text = str(last_text)
+                        if len(raw_text) > 12000:
+                            log.info(
+                                "summarize_text_truncated",
+                                original_chars=len(raw_text),
+                                truncated_chars=12000,
+                            )
+                            raw_text = raw_text[:12000]
+                        t_args["text"] = raw_text
+
+                    if not t_args.get("summary_type") and not is_choice_active:
+                        suggestion = NLPHelperService.suggest_summarize_format(
+                            str(last_text) if last_text else ""
+                        )
+                        t_args["summary_type"] = suggestion["recommended"]
+                        log.info(
+                            "auto_summary_type_selected",
+                            summary_type=t_args["summary_type"],
+                            reason=suggestion["reason"],
+                            chars=suggestion["stats"]["chars"],
+                        )
+                    elif not t_args.get("summary_type"):
+                        t_args["summary_type"] = "extractive"
+
+                fixed_calls.append({"name": t_name, "args": t_args, "id": t_id})
 
             await self.state_manager.update_state(
                 context.thread_id,
@@ -1440,10 +1294,10 @@ class EdmsDocumentAgent(AbstractAgent):
                 as_node="agent",
             )
 
-            # Recurse
             return await self._orchestrate(
                 context=context,
                 inputs=None,
+                is_choice_active=True,
                 iteration=iteration + 1,
             )
 
@@ -1452,57 +1306,38 @@ class EdmsDocumentAgent(AbstractAgent):
             return AgentResponse(
                 status=AgentStatus.ERROR,
                 message="Превышено время ожидания выполнения.",
-            )
+            ).model_dump()
 
         except Exception as exc:
             log.error("orchestration_error", error=str(exc), exc_info=True)
             return AgentResponse(
                 status=AgentStatus.ERROR,
                 message=f"Ошибка оркестрации: {exc}",
-            )
+            ).model_dump()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     async def _build_context(self, request: AgentRequest) -> ContextParams:
-        """Build ``ContextParams`` from ``AgentRequest``.
+        """Build immutable ContextParams from AgentRequest.
 
-        Handles ``user_context`` as plain dict or Pydantic model.
+        Safely extracts user_context fields — handles None, dict, or Pydantic model.
 
         Args:
-            request: Validated ``AgentRequest``.
+            request: Validated AgentRequest DTO.
 
         Returns:
-            ``ContextParams`` for this request.
+            Immutable ContextParams.
         """
         ctx = request.user_context or {}
         if hasattr(ctx, "model_dump"):
             ctx = ctx.model_dump(exclude_none=True)
 
-        user_name: str = (
-                ctx.get("firstName")
-                or ctx.get("first_name")
-                or ctx.get("name")
-                or "пользователь"
+        user_name = (
+            ctx.get("firstName")
+            or ctx.get("first_name")
+            or ctx.get("name")
+            or "пользователь"
         ).strip()
-
-        # ── Фамилия ───────────────────────────────────────────────────────────
-        user_last_name: str | None = (
-                ctx.get("lastName") or ctx.get("last_name")
-        )
-
-        # ── Подразделение (EmployeeRepository → agent_routes → user_context) ──
-        user_department: str | None = (
-                ctx.get("departmentName")
-                or ctx.get("department_name")
-                or ctx.get("authorDepartmentName")
-        )
-
-        # ── Должность ─────────────────────────────────────────────────────────
-        user_post: str | None = (
-                ctx.get("postName")
-                or ctx.get("post_name")
-                or ctx.get("authorPost")
-        )
 
         return ContextParams(
             user_token=request.user_token,
@@ -1511,20 +1346,17 @@ class EdmsDocumentAgent(AbstractAgent):
             thread_id=request.thread_id or "default",
             user_name=user_name,
             user_first_name=ctx.get("firstName") or ctx.get("first_name"),
-            user_last_name=user_last_name,
-            user_department=user_department,
-            user_post=user_post,
         )
 
     @staticmethod
     def _build_semantic_xml(semantic_ctx: Any) -> str:
-        """Build ``<semantic_context>`` XML block.
+        """Build XML block from SemanticContext for prompt injection.
 
         Args:
-            semantic_ctx: ``SemanticContext`` from ``SemanticDispatcher``.
+            semantic_ctx: SemanticContext returned by SemanticDispatcher.
 
         Returns:
-            XML string for system prompt.
+            XML string to append to system prompt.
         """
         return (
             "\n<semantic_context>"

@@ -1,5 +1,6 @@
 # src/ai_edms_assistant/application/services/semantic_dispatcher.py
-"""Semantic dispatcher for intent classification and query analysis."""
+"""Semantic dispatcher for intent classification and query analysis.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +11,18 @@ from ...domain.entities.document import Document
 
 
 class UserIntent(StrEnum):
-    """User intent types."""
+    """User intent types detected from message keywords.
+
+    Attributes:
+        CREATE_TASK: Создание поручения / задания.
+        CREATE_INTRODUCTION: Создание листа ознакомления.
+        SUMMARIZE: Суммаризация текста / вложения.
+        SEARCH: Поиск документов / сотрудников.
+        COMPARE: Сравнение документов ИЛИ версий одного документа.
+        ANALYZE: Анализ / аналитика по документу.
+        QUESTION: Вопрос о конкретном поле / данных документа.
+        UNKNOWN: Не удалось определить намерение.
+    """
 
     CREATE_TASK = "create_task"
     CREATE_INTRODUCTION = "create_introduction"
@@ -23,7 +35,7 @@ class UserIntent(StrEnum):
 
 
 class QueryComplexity(StrEnum):
-    """Query complexity levels."""
+    """Query complexity levels based on word count."""
 
     SIMPLE = "simple"
     MEDIUM = "medium"
@@ -32,7 +44,15 @@ class QueryComplexity(StrEnum):
 
 @dataclass
 class QueryAnalysis:
-    """Analyzed user query."""
+    """Analyzed user query with detected intent and complexity.
+
+    Attributes:
+        original: Original user message.
+        refined: Preprocessed message for agent (same as original in MVP).
+        intent: Detected user intent.
+        complexity: Estimated query complexity.
+        confidence: Detection confidence 0.0–1.0.
+    """
 
     original: str
     refined: str
@@ -43,36 +63,102 @@ class QueryAnalysis:
 
 @dataclass
 class SemanticContext:
-    """Semantic context for agent execution."""
+    """Semantic context assembled for agent execution.
+
+    Attributes:
+        query: Analyzed query with intent and complexity.
+        document: Fetched domain document (or None if unavailable).
+    """
 
     query: QueryAnalysis
     document: Document | None = None
 
 
 class SemanticDispatcher:
-    """Heuristic-based semantic dispatcher (MVP version)."""
+    """Heuristic-based semantic dispatcher.
 
-    INTENT_KEYWORDS = {
-        UserIntent.CREATE_TASK: ["поручение", "поручи", "создай задач", "задание"],
-        UserIntent.CREATE_INTRODUCTION: ["ознаком", "список ознаком"],
-        UserIntent.SUMMARIZE: ["суммари", "резюм", "кратко", "опиши"],
-        UserIntent.COMPARE: ["сравни", "отличия", "разница"],
-        UserIntent.SEARCH: ["найди", "поиск", "покажи"],
+    Classifies user messages into ``UserIntent`` using keyword matching.
+    Priority order matches the dict iteration order — more specific intents
+    should be listed first.
+    """
+
+    INTENT_KEYWORDS: dict[UserIntent, list[str]] = {
+        # ── Поручение / задание ───────────────────────────────────────────────
+        UserIntent.CREATE_TASK: [
+            "поручение", "поручи", "создай задач", "задание",
+            "поставь задачу", "назначь", "исполнитель",
+        ],
+
+        # ── Ознакомление ──────────────────────────────────────────────────────
+        UserIntent.CREATE_INTRODUCTION: [
+            "ознаком", "список ознаком", "лист ознакомления",
+            "отправь на ознакомление",
+        ],
+
+        # ── Суммаризация ──────────────────────────────────────────────────────
+        UserIntent.SUMMARIZE: [
+            "суммари", "резюм", "кратко", "опиши", "перескажи",
+            "краткое содержание", "тезисы", "факты из документа",
+        ],
+
+        # ── Сравнение / версии ────────────────────────────────────────────────
+        UserIntent.COMPARE: [
+            # Прямые команды сравнения
+            "сравни", "сравнение", "отличия", "разница", "чем отличается",
+            "что изменилось", "изменения между", "найди отличия",
+            # Версионные запросы
+            "версий", "версии", "версия", "сколько версий",
+            "покажи версии", "история версий", "сравни версию",
+            "версия 1", "версия 2", "v1", "v2",
+            "предыдущая версия", "текущая версия", "старая версия",
+        ],
+
+        # ── Поиск ─────────────────────────────────────────────────────────────
+        UserIntent.SEARCH: [
+            "найди", "поиск", "покажи", "найти документ",
+            "поищи", "где документ", "найти сотрудника",
+        ],
+
+        # ── Анализ ────────────────────────────────────────────────────────────
+        UserIntent.ANALYZE: [
+            "проанализируй", "анализ", "аналитика", "статистика",
+            "отчёт", "сводка",
+        ],
+
+        # ── Вопрос о поле документа ───────────────────────────────────────────
+        UserIntent.QUESTION: [
+            "сколько", "какой", "какая", "какое", "кто", "когда", "где",
+            "что это", "расскажи о", "информация о", "данные о",
+        ],
     }
 
     def build_context(
-        self, message: str, document: Document | None = None
+        self,
+        message: str,
+        document: Document | None = None,
     ) -> SemanticContext:
-        """Build semantic context from user message."""
+        """Build semantic context from user message.
+
+        Applies keyword matching in priority order. First match wins.
+        Falls back to ``UNKNOWN`` if no keywords match.
+
+        Args:
+            message: Raw user message string.
+            document: Fetched domain Document (may be None).
+
+        Returns:
+            ``SemanticContext`` with detected intent and complexity.
+        """
         message_lower = message.lower()
 
-        # Detect intent
+        # ── Intent detection ──────────────────────────────────────────────────
         intent = UserIntent.UNKNOWN
-        for i, keywords in self.INTENT_KEYWORDS.items():
+        for candidate_intent, keywords in self.INTENT_KEYWORDS.items():
             if any(kw in message_lower for kw in keywords):
-                intent = i
+                intent = candidate_intent
                 break
 
+        # ── Complexity by word count ──────────────────────────────────────────
         word_count = len(message.split())
         complexity = (
             QueryComplexity.COMPLEX
