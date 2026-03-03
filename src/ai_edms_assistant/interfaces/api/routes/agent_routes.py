@@ -60,16 +60,6 @@ _ATTACHMENT_FILENAME_RE_B = re.compile(
 
 def _parse_attachment_filename(message: str | None) -> str | None:
     """Extract attachment file name from frontend message.
-
-    Handles two message formats sent by the frontend:
-        Format A: "Анализ файла: Договор оказания услуг.docx" (legacy prefix)
-        Format B: "Договор оказания услуг.docx" (bare filename, current frontend)
-
-    Args:
-        message: Raw message string from SummarizeRequest.message.
-
-    Returns:
-        Normalized filename string, or None if not detected.
     """
     if not message:
         return None
@@ -109,8 +99,6 @@ async def _resolve_user_context(
 ) -> dict:
     """Resolve user context from EDMS Employee API and normalize keys.
 
-    Graceful degradation: returns {"firstName": "Коллега"} on any error.
-
     Args:
         user_id: Employee UUID extracted from JWT.
         token: JWT bearer token for API auth.
@@ -148,22 +136,6 @@ async def chat(
     http_client: Annotated[EdmsHttpClient, Depends(get_http_client)],
 ) -> ChatResponse:
     """Process user message via EdmsDocumentAgent.
-
-    Pipeline:
-        1. Extract user_id from JWT.
-        2. Resolve + normalize user_context.
-        3. Build AgentRequest and call agent.chat().
-           Агент сам определяет: локальный файл / EDMS attachment / обычный запрос.
-        4. Schedule temp-file cleanup (BackgroundTask).
-
-    Args:
-        body: Validated ChatRequest.
-        background_tasks: FastAPI background task manager.
-        agent: Injected EdmsDocumentAgent.
-        http_client: Shared EdmsHttpClient (injected).
-
-    Returns:
-        ChatResponse with status, response text, thread_id.
     """
     user_id = extract_user_id_from_token(body.user_token)
     thread_id = (
@@ -194,7 +166,6 @@ async def chat(
 
     result = await agent.chat(agent_request)
 
-    # ── Schedule file cleanup ─────────────────────────────────────────────────
     if body.file_path and not UUID_RE.match(str(body.file_path)):
         if result.get("status") not in ("requires_action", "requires_choice"):
             background_tasks.add_task(_cleanup_file, body.file_path)
@@ -285,114 +256,75 @@ async def chat_history(thread_id: str, agent: AgentDep) -> dict:
 async def _resolve_attachment_by_name(
     document_id: str,
     file_name: str,
-    token: str,
-    http_client: EdmsHttpClient,
+    token: str
 ) -> str | None:
-    """Resolve attachment UUID by file name from document metadata.
-
-    Prevents LLM from picking the wrong attachment when multiple files exist.
-    Called before starting the agent — deterministic, not LLM-dependent.
-
-    Args:
-        document_id: Active document UUID string.
-        file_name: Target attachment file name (e.g. "Договор оказания услуг.docx").
-        token: JWT bearer token.
-        http_client: Shared EdmsHttpClient for API calls.
-
-    Returns:
-        Attachment UUID string, or None if not found.
+    """Resolve attachment UUID by file name using same pipeline as AttachmentTool.
     """
     try:
         from uuid import UUID
-        from ....infrastructure.edms_api.clients.document_client import (
-            EdmsDocumentClient,
+        from ....infrastructure.edms_api.http_client import EdmsHttpClient as _Client
+        from ....infrastructure.edms_api.repositories.edms_document_repository import (
+            EdmsDocumentRepository,
         )
 
-        async with EdmsDocumentClient() as client:
-            raw_doc = await client.get_by_id(
-                document_id=UUID(document_id),
-                token=token,
-            )
+        repo = EdmsDocumentRepository(http_client=_Client())
+        doc = await repo.get_with_attachments(
+            document_id=UUID(document_id),
+            token=token,
+        )
 
-        if not raw_doc:
-            log.warning(
-                "attachment_resolve_no_doc",
-                document_id=document_id,
-                file_name=file_name,
-            )
+        if not doc:
+            log.warning("attachment_resolve_no_doc", document_id=document_id[:8])
             return None
 
-        raw_attachments: list[dict] = (
-            raw_doc.get("attachments")
-            or raw_doc.get("files")
-            or []
-        )
+        attachments = doc.attachments or []
 
-        if not raw_attachments:
+        if not attachments:
             log.warning(
                 "attachment_resolve_no_attachments",
-                document_id=document_id,
+                document_id=document_id[:8],
                 file_name=file_name,
-                raw_top_keys=list(raw_doc.keys())[:10],
             )
             return None
 
         needle = file_name.strip().lower()
-
-        for att in raw_attachments:
-            att_name: str = (
-                att.get("fileName")
-                or att.get("file_name")
-                or att.get("name")
-                or ""
-            )
-            if att_name.strip().lower() == needle:
-                att_id = str(att.get("id") or att.get("attachmentId") or "")
-                if att_id:
-                    log.info(
-                        "attachment_resolved_by_name",
-                        file_name=att_name,
-                        attachment_id=att_id[:8],
-                    )
-                    return att_id
-
         needle_stem = needle.rsplit(".", 1)[0]
-        for att in raw_attachments:
-            att_name = (
-                att.get("fileName")
-                or att.get("file_name")
-                or att.get("name")
-                or ""
-            )
-            if needle_stem and needle_stem in att_name.strip().lower():
-                att_id = str(att.get("id") or att.get("attachmentId") or "")
-                if att_id:
-                    log.info(
-                        "attachment_resolved_fuzzy",
-                        file_name=att_name,
-                        attachment_id=att_id[:8],
-                    )
-                    return att_id
+
+        for att in attachments:
+            if att.file_name.strip().lower() == needle:
+                log.info(
+                    "attachment_resolved_by_name",
+                    file_name=att.file_name,
+                    attachment_id=str(att.id)[:8],
+                )
+                return str(att.id)
+
+        for att in attachments:
+            if needle_stem and needle_stem in att.file_name.strip().lower():
+                log.info(
+                    "attachment_resolved_fuzzy",
+                    file_name=att.file_name,
+                    attachment_id=str(att.id)[:8],
+                )
+                return str(att.id)
 
         log.warning(
             "attachment_resolve_not_found",
-            document_id=document_id,
             file_name=file_name,
-            available=[
-                att.get("fileName") or att.get("name")
-                for att in raw_attachments
-            ],
+            available=[a.file_name for a in attachments],
         )
         return None
 
     except Exception as exc:
         log.warning(
             "attachment_resolve_failed",
-            document_id=document_id,
+            document_id=document_id[:8],
             file_name=file_name,
             error=str(exc),
         )
         return None
+
+
 
 @router.post(
     "/actions/summarize",
@@ -406,14 +338,6 @@ async def summarize(
     http_client: Annotated[EdmsHttpClient, Depends(get_http_client)],
 ) -> ChatResponse:
     """Direct summarize action.
-
-    Args:
-        body: SummarizeRequest with file_path / context_ui_id / human_choice.
-        background_tasks: FastAPI background task manager.
-        agent: Injected EdmsDocumentAgent.
-
-    Returns:
-        ChatResponse with summary or requires_choice for format selection.
     """
     user_id = extract_user_id_from_token(body.user_token)
     thread_id = body.thread_id or f"summarize_{user_id}_{uuid.uuid4().hex[:6]}"
