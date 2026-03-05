@@ -59,8 +59,7 @@ _ATTACHMENT_FILENAME_RE_B = re.compile(
 
 
 def _parse_attachment_filename(message: str | None) -> str | None:
-    """Extract attachment file name from frontend message.
-    """
+    """Extract attachment file name from frontend message."""
     if not message:
         return None
     stripped = message.strip()
@@ -79,11 +78,7 @@ router = APIRouter(tags=["agent"])
 
 
 def _cleanup_file(file_path: str) -> None:
-    """Safely remove a temporary file (BackgroundTask).
-
-    Args:
-        file_path: Absolute path to the temporary file to remove.
-    """
+    """Safely remove a temporary file (BackgroundTask)."""
     try:
         p = Path(file_path)
         if p.exists():
@@ -97,17 +92,7 @@ async def _resolve_user_context(
     token: str,
     http_client: EdmsHttpClient,
 ) -> dict:
-    """Resolve user context from EDMS Employee API and normalize keys.
-
-    Args:
-        user_id: Employee UUID extracted from JWT.
-        token: JWT bearer token for API auth.
-        http_client: Shared EdmsHttpClient from DI container.
-
-    Returns:
-        Normalized dict with canonical camelCase keys:
-            firstName, lastName, middleName, departmentName, postName.
-    """
+    """Resolve user context from EDMS Employee API and normalize keys."""
     try:
         from uuid import UUID
 
@@ -135,8 +120,7 @@ async def chat(
     agent: AgentDep,
     http_client: Annotated[EdmsHttpClient, Depends(get_http_client)],
 ) -> ChatResponse:
-    """Process user message via EdmsDocumentAgent.
-    """
+    """Process user message via EdmsDocumentAgent."""
     user_id = extract_user_id_from_token(body.user_token)
     thread_id = (
         body.thread_id or f"user_{user_id}_doc_{body.context_ui_id or 'general'}"
@@ -191,17 +175,7 @@ async def chat(
     summary="Создать новый чат-тред",
 )
 async def new_chat(body: NewChatRequest) -> NewChatResponse:
-    """Generate a fresh thread_id for a new conversation session.
-
-    Args:
-        body: NewChatRequest with user_token.
-
-    Returns:
-        NewChatResponse with new thread_id.
-
-    Raises:
-        HTTPException 401: On invalid JWT.
-    """
+    """Generate a fresh thread_id for a new conversation session."""
     try:
         user_id = extract_user_id_from_token(body.user_token)
         return NewChatResponse(
@@ -214,15 +188,7 @@ async def new_chat(body: NewChatRequest) -> NewChatResponse:
 
 @router.get("/chat/history/{thread_id}", summary="История сообщений треда")
 async def chat_history(thread_id: str, agent: AgentDep) -> dict:
-    """Return human/AI messages for a conversation thread.
-
-    Args:
-        thread_id: LangGraph thread identifier.
-        agent: Injected EdmsDocumentAgent.
-
-    Returns:
-        Dict with ``messages`` list of ``{type, content}`` objects.
-    """
+    """Return human/AI messages for a conversation thread."""
     try:
         state = await agent.state_manager.get_state(thread_id)
         messages = state.values.get("messages", [])
@@ -252,14 +218,12 @@ async def chat_history(thread_id: str, agent: AgentDep) -> dict:
         return {"messages": []}
 
 
-
 async def _resolve_attachment_by_name(
     document_id: str,
     file_name: str,
     token: str
 ) -> str | None:
-    """Resolve attachment UUID by file name using same pipeline as AttachmentTool.
-    """
+    """Resolve attachment UUID by file name using same pipeline as AttachmentTool."""
     try:
         from uuid import UUID
         from ....infrastructure.edms_api.http_client import EdmsHttpClient as _Client
@@ -325,7 +289,6 @@ async def _resolve_attachment_by_name(
         return None
 
 
-
 @router.post(
     "/actions/summarize",
     response_model=ChatResponse,
@@ -334,11 +297,9 @@ async def _resolve_attachment_by_name(
 async def summarize(
     body: SummarizeRequest,
     background_tasks: BackgroundTasks,
-    agent: AgentDep,
-    http_client: Annotated[EdmsHttpClient, Depends(get_http_client)],
+    agent: AgentDep
 ) -> ChatResponse:
-    """Direct summarize action.
-    """
+    """Direct summarize action."""
     user_id = extract_user_id_from_token(body.user_token)
     thread_id = body.thread_id or f"summarize_{user_id}_{uuid.uuid4().hex[:6]}"
     file_path = body.file_path
@@ -358,7 +319,6 @@ async def summarize(
             document_id=body.context_ui_id,
             file_name=attachment_file_name,
             token=body.user_token,
-            http_client=http_client,
         )
         if resolved_id:
             file_path = resolved_id
@@ -427,18 +387,7 @@ async def upload_file(
     user_token: Annotated[str, Form(...)],
     file: Annotated[UploadFile, File(...)],
 ) -> FileUploadResponse:
-    """Upload a temporary file for subsequent chat/summarize use.
-
-    Args:
-        user_token: JWT token (Form field).
-        file: Uploaded file (multipart/form-data).
-
-    Returns:
-        FileUploadResponse with file_path and file_name.
-
-    Raises:
-        HTTPException 500: On file save failure.
-    """
+    """Upload a temporary file for subsequent chat/summarize use."""
     try:
         user_id = extract_user_id_from_token(user_token)
         original_name = file.filename or "upload"
