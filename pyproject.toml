@@ -1,105 +1,227 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# pyproject.toml — EDMS AI Assistant
+# Build backend : hatchling (совместим с uv)
+# Python        : >=3.13
+# Standard      : PEP 517 / PEP 621 / PEP 735 (dependency-groups)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[build-system]
+requires      = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+
+# ─── Project metadata (PEP 621) ───────────────────────────────────────────────
+
 [project]
-name = "ai-edms-assistant"
-version = "0.1.0"
-description = "AI-Powered EDMS Task Automation Assistant"
-readme = "README.md"
+name        = "edms-ai-assistant"
+version     = "0.1.0"
+description = "AI-Powered EDMS Document Automation Assistant"
+readme      = "README.md"
+license     = { text = "MIT" }
 requires-python = ">=3.13"
-authors = [{ name = "Next", email = "your.email@example.com" }]
-keywords = ["ai", "next", "edms", "automation", "assistant", "langchain"]
+authors     = [{ name = "Next", email = "your.email@example.com" }]
+keywords    = ["ai", "edms", "automation", "assistant", "langchain", "langgraph"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+
+# ─── Runtime dependencies ─────────────────────────────────────────────────────
+
 dependencies = [
-    "langchain>=1.1.2,<2.0.0",
-    "langchain-community>=0.4.1,<1.0.0",
-    "langchain-core>=1.1.1,<2.0.0",
-    "langchain-experimental>=0.4.0,<0.5.0",
-    "langchain-openai>=1.1.0,<1.2.0",
-    "langgraph>=1.0.4,<2.0.0",
-    "langgraph-prebuilt>=1.0.5,<2.0.0",
-    "langgraph-checkpoint-postgres>=3.0.1,<4.0.0",
-    "fastapi>=0.123.9,<0.124.0",
-    "uvicorn[standard]>=0.38.0,<0.39.0",
-    "pydantic>=2.12.5,<3.0.0",
-    "pydantic-settings>=2.12.0,<3.0.0",
-    "pypdf2>=3.0.1,<3.1.0",
-    "requests>=2.32.5,<3.0.0",
-    "tiktoken>=0.12.0,<0.13.0",
-    "typing-extensions>=4.15.0,<5.0.0",
-    "pymupdf>=1.6.6,<2.0.0",
-    "chromadb>=1.3.5,<2.0.0",
-    "python-multipart>=0.0.20,<0.1.0",
-    "pyjwt[crypto]>=2.10.1,<3.0.0",
-    "redis>=7.1.0,<8.0.0",
-    "psycopg[binary]>=3.3.1,<4.0.0",
-    "sqlalchemy>=2.0.44,<3.0.0",
-    "structlog>=25.5.0,<26.0.0",
-    "anyio>=4.12.0,<5.0.0",
-    "httpx>=0.28.1,<0.30.0",
-    "jsonpath_ng>=1.7.0,<2.0.0",
-    "docx2txt>=0.9,<0.10",
-    "openpyxl>=3.1.5,<4.0.0",
-    "xlrd>=2.0.2,<3.0.0",
-    "memory>=1.0.0,<2.0.0",
-    "python-docx>=1.2.0,<2.0.0",
-    "docx>=0.2.4,<0.3.0",
-    "aiofiles>=25.1.0,<26.0.0",
-    "command>=0.1.0,<0.2.0",
-    "torch>=2.9.1,<3.0.0",
-    "unstructured_inference>=1.1.2,<2.0.0",
+    # ── LangChain / LangGraph ────────────────────────────────────────────────
+    "langchain>=0.3.0,<1.0.0",
+    "langchain-community>=0.3.0,<1.0.0",
+    "langchain-core>=0.3.0,<1.0.0",
+    "langchain-openai>=0.3.0,<1.0.0",
+    "langgraph>=0.4.0,<1.0.0",
+    "langgraph-checkpoint-postgres>=2.0.0,<3.0.0",
+    "langchain-ollama>=0.3.0,<1.0.0",
+
+    # ── Web / API ────────────────────────────────────────────────────────────
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.34.0,<1.0.0",
+    "httpx>=0.28.0,<1.0.0",
+    "python-multipart>=0.0.20,<1.0.0",
+    "aiofiles>=24.0.0,<26.0.0",
+
+    # ── Pydantic / Settings ──────────────────────────────────────────────────
+    "pydantic>=2.11.0,<3.0.0",
+    "pydantic-settings>=2.7.0,<3.0.0",
+
+    # ── Auth ─────────────────────────────────────────────────────────────────
+    "pyjwt[crypto]>=2.10.0,<3.0.0",
+
+    # ── Storage / DB ─────────────────────────────────────────────────────────
+    "redis>=5.2.0,<6.0.0",
+    "psycopg[binary]>=3.2.0,<4.0.0",
+    "sqlalchemy>=2.0.0,<3.0.0",
+
+    # ── Document processing ──────────────────────────────────────────────────
+    "pypdf>=5.0.0,<6.0.0",
+    "pymupdf>=1.24.0,<2.0.0",
+    "python-docx>=1.1.0,<2.0.0",
+    "docx2txt>=0.8,<1.0",
+    "openpyxl>=3.1.0,<4.0.0",
+    "xlrd>=2.0.0,<3.0.0",
+    "mammoth>=1.12.0,<2.0.0",
+
+    # ── NLP / ML ─────────────────────────────────────────────────────────────
+    "tiktoken>=0.9.0,<1.0.0",
+    "torch>=2.5.0,<3.0.0",
+
+    # ── Vector DB ────────────────────────────────────────────────────────────
+    "chromadb>=0.6.0,<1.0.0",
+
+    # ── Async / FastAPI / AsyncIO ───────────────────────────────────────────
+    "asyncpg>=0.31.0,<1.0.0",
+
+    # ── Utils ────────────────────────────────────────────────────────────────
+    "structlog>=25.1.0,<26.0.0",
+    "anyio>=4.7.0,<5.0.0",
+    "jsonpath-ng>=1.7.0,<2.0.0",
+    "typing-extensions>=4.12.0,<5.0.0",
+    "requests>=2.32.0,<3.0.0",
+
+    # ── MCP / Vector DB / Observability / Migrations ──
+    "fastmcp>=2.0.0,<3.0.0",
+    "qdrant-client>=1.11.0,<2.0.0",
+    "jsonschema>=4.23.0,<5.0.0",
+    "prometheus-client>=0.21.0,<1.0.0",
+    "alembic>=1.13.0,<2.0.0"
 ]
+
+[project.urls]
+Homepage   = "https://github.com/your-org/edms-ai-assistant"
+Repository = "https://github.com/your-org/edms-ai-assistant"
+Issues     = "https://github.com/your-org/edms-ai-assistant/issues"
+
+[project.scripts]
+edms-assistant = "edms_ai_assistant.cli:main"
+
+
+# ─── Dependency groups (PEP 735) ─────────────────────────────────────────────
 
 [dependency-groups]
-#managed = true
 dev = [
-    "pytest>=9.0.2",
-    "black>=26.1.0",
-    "isort>=7.0.0",
-    "hatchling>=1.28.0",
-    "mypy>=1.19.1",
-    "ruff>=0.15.1",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "anyio[trio]>=4.7.0",
+]
+lint = [
+    "ruff>=0.9.0",
+    "mypy>=1.13.0",
+    "black>=25.1.0",
+    "isort>=5.13.0",
+    "types-requests>=2.32.0",
+    "types-aiofiles>=24.0.0",
 ]
 
-# Настройка Black (форматирование кода)
-[tool.black]
-line-length = 88
-target-version = ['py313']
-include = '\.pyi?$'
-extend-exclude = '/(\.venv|\.git|tests)/'
 
-# Настройка isort (сортировка импортов)
-[tool.isort]
-profile = "black"
-line_length = 88
-known_first_party = ["ai_edms_assistant"]
-
-# Настройка Pytest (тесты)
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
-addopts = "-ra -q"
-
-# Настройка Mypy (проверка типов)
-[tool.mypy]
-python_version = "3.13"
-strict = true
-ignore_missing_imports = true
-check_untyped_defs = true
-packages = ["ai_edms_assistant"]
-mypy_path = "src"
-
-[tool.ruff]
-select = ["E", "F", "I", "B", "C4"]
-ignore = ["D100", "D104"]
+# ─── Hatch (package discovery) ───────────────────────────────────────────────
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ai_edms_assistant"]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+packages = ["edms_ai_assistant"]
 
 
+# ─── uv ──────────────────────────────────────────────────────────────────────
 
+[tool.uv]
+# preview = true  # для экспериментальных фич uv
+
+[tool.uv.workspace]
+exclude = [".venv"]
+
+
+# ─── Ruff ─────────────────────────────────────────────────────────────────────
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+exclude = [
+    ".venv",
+    "__pycache__",
+    "*.pyc",
+    "edms_ai_assistant/generated/",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "B",
+    "C4",
+    "SIM",
+    "UP",
+    "RUF",
+    "TC",
+]
+ignore = [
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"edms_ai_assistant/generated/*" = ["ALL"]
+"**/__init__.py"                = ["F401"]
+"edms_ai_assistant/llm.py"      = ["F811"]
+"scripts/**"                    = ["T201", "F841"]
+"tests/**"                      = ["E402", "S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["edms_ai_assistant"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+
+# ─── Black ────────────────────────────────────────────────────────────────────
+
+[tool.black]
+line-length    = 88
+target-version = ["py313"]
+extend-exclude = "(generated|migrations)/"
+
+
+# ─── isort ────────────────────────────────────────────────────────────────────
+
+[tool.isort]
+profile           = "black"
+line_length       = 88
+known_first_party = ["edms_ai_assistant"]
+skip_glob         = ["edms_ai_assistant/generated/*"]
+
+
+# ─── Mypy ─────────────────────────────────────────────────────────────────────
+
+[tool.mypy]
+python_version         = "3.13"
+strict                 = true
+ignore_missing_imports = true
+check_untyped_defs     = true
+warn_return_any        = true
+warn_unused_configs    = true
+exclude                = ["edms_ai_assistant/generated/", "tests/"]
+
+[[tool.mypy.overrides]]
+module        = "edms_ai_assistant.generated.*"
+ignore_errors = true
+
+
+# ─── Pytest ───────────────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths    = ["tests"]
+addopts      = "-ra -q --tb=short"
+
+# uv add docx2txt

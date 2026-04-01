@@ -1,0 +1,16 @@
+{
+  "apiVersion": 1,
+  "providers": [
+    {
+      "name": "EDMS AI",
+      "orgId": 1,
+      "folder": "EDMS AI",
+      "type": "file",
+      "disableDeletion": false,
+      "updateIntervalSeconds": 30,
+      "options": {
+        "path": "/var/lib/grafana/dashboards"
+      }
+    }
+  ]
+}

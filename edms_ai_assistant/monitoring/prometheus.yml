@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: 'edms_ai_assistant'
+
+scrape_configs:
+  - job_name: 'orchestrator'
+    static_configs:
+      - targets: ['orchestrator:8002']
+    metrics_path: /metrics
+
+  - job_name: 'feedback-collector'
+    static_configs:
+      - targets: ['feedback-collector:8003']
+    metrics_path: /metrics
+
+  - job_name: 'mcp-server'
+    static_configs:
+      - targets: ['mcp-server:8001']
+    metrics_path: /metrics
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
