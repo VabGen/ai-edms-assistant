@@ -1,10 +1,34 @@
-#
-from typing import List, Optional, Set
+"""
+edms_ai_assistant/packages/core/settings.py
+
+Production-ready configuration with validation, security, and environment separation.
+Интегрируется с pydantic-settings для управления через .env
+
+Features:
+• Валидация всех полей через Pydantic
+• Секреты через SecretStr (не логируются)
+• URL валидация через HttpUrl
+• Environment-specific defaults
+• Автоматическая сборка DATABASE_URL
+"""
+from __future__ import annotations
+
+import os
+from typing import List, Optional, Set, Dict, Any, Union
+from pathlib import Path
 from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """
+    Application configuration with validation.
+
+    Security notes:
+    - Secrets are stored as SecretStr (not printed in logs)
+    - URLs are validated as HttpUrl (optional where applicable)
+    - Environment-specific defaults available
+    """
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -231,9 +255,22 @@ class Settings(BaseSettings):
     # ═══════════════════════════════════════════════════════════════════════
     # LOGGING
     # ═══════════════════════════════════════════════════════════════════════
-    LOGGING_LEVEL: str = Field(default="INFO")
-    LOGGING_FORMAT: str = Field(default="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    LOGGING_INCLUDE_TRACE_ID: bool = Field(default=True)
+    LOGGING_LEVEL: str = Field(
+        default="INFO",
+        pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$",
+        description="Уровень логирования",
+        env="LOGGING_LEVEL"
+    )
+    LOGGING_FORMAT: str = Field(
+        default="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        description="Формат логов для стандартного logging",
+        env="LOGGING_FORMAT"
+    )
+    LOGGING_INCLUDE_TRACE_ID: bool = Field(
+        default=True,
+        description="Включать trace_id из OpenTelemetry в логи",
+        env="LOGGING_INCLUDE_TRACE_ID"
+    )
 
     # ═══════════════════════════════════════════════════════════════════════
     # TELEMETRY & MONITORING
@@ -294,3 +331,8 @@ class Settings(BaseSettings):
 # GLOBAL SETTINGS INSTANCE
 # ═══════════════════════════════════════════════════════════════════════════
 settings = Settings()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EXPORT
+# ═══════════════════════════════════════════════════════════════════════════
+__all__ = ["Settings", "settings"]

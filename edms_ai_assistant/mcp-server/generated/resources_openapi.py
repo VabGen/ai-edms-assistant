@@ -1,4 +1,4 @@
-# edms_ai_assistant/generated/resources_openapi.py
+# edms_ai_assistant/
 from __future__ import annotations
 
 from datetime import date, datetime

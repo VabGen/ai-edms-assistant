@@ -20,7 +20,7 @@ readme      = "README.md"
 license     = { text = "MIT" }
 requires-python = ">=3.13"
 authors     = [{ name = "Next", email = "your.email@example.com" }]
-keywords    = ["ai", "edms", "automation", "assistant", "langchain", "langgraph"]
+keywords    = ["ai", "edms", "automation", "assistant", "langchain", "langgraph", "fastmcp", "multi-agent", "rag"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -74,8 +74,16 @@ dependencies = [
     "tiktoken>=0.9.0,<1.0.0",
     "torch>=2.5.0,<3.0.0",
 
-    # ── Vector DB ────────────────────────────────────────────────────────────
-    "chromadb>=0.6.0,<1.0.0",
+    # ── Retry / Scheduling ───────────────────────────────────────────────────
+    "tenacity>=9.0.0,<10.0.0",
+    "apscheduler>=3.11.0,<4.0.0",
+
+    # ── FAISS / Embeddings (fallback для RAG) ────────────────────────────────
+    "faiss-cpu>=1.9.0,<2.0.0",
+    "sentence-transformers>=3.0.0,<4.0.0",
+
+    # ── NumPy ────────────────────────────────────────────────────────────────
+    "numpy>=2.0.0,<3.0.0",
 
     # ── Async / FastAPI / AsyncIO ───────────────────────────────────────────
     "asyncpg>=0.31.0,<1.0.0",
