@@ -1,0 +1,40 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    environment: production
+    project: edms-ai
+
+scrape_configs:
+  - job_name: orchestrator
+    static_configs:
+      - targets: ["orchestrator:8000"]
+    metrics_path: /metrics
+    scrape_interval: 15s
+
+  - job_name: feedback-collector
+    static_configs:
+      - targets: ["feedback-collector:8002"]
+    metrics_path: /metrics
+    scrape_interval: 15s
+
+  - job_name: mcp-server
+    static_configs:
+      - targets: ["mcp-server:8001"]
+    metrics_path: /metrics
+    scrape_interval: 30s
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+    scrape_interval: 30s
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+    scrape_interval: 30s
