@@ -6,21 +6,21 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 [build-system]
-requires      = ["hatchling>=1.27.0"]
+requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 
 # ─── Project metadata (PEP 621) ───────────────────────────────────────────────
 
 [project]
-name        = "edms-ai-assistant"
-version     = "0.1.0"
+name = "edms-ai-assistant"
+version = "0.1.0"
 description = "AI-Powered EDMS Document Automation Assistant"
-readme      = "README.md"
-license     = { text = "MIT" }
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.13"
-authors     = [{ name = "Next", email = "your.email@example.com" }]
-keywords    = ["ai", "edms", "automation", "assistant", "langchain", "langgraph", "fastmcp", "multi-agent", "rag"]
+authors = [{ name = "Next", email = "your.email@example.com" }]
+keywords = ["ai", "edms", "automation", "assistant", "langchain", "langgraph", "fastmcp", "multi-agent", "rag"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -33,80 +33,62 @@ classifiers = [
 # ─── Runtime dependencies ─────────────────────────────────────────────────────
 
 dependencies = [
-    # ── LangChain / LangGraph ────────────────────────────────────────────────
-    "langchain>=0.3.0,<1.0.0",
-    "langchain-community>=0.3.0,<1.0.0",
-    "langchain-core>=0.3.0,<1.0.0",
-    "langchain-openai>=0.3.0,<1.0.0",
-    "langgraph>=0.4.0,<1.0.0",
-    "langgraph-checkpoint-postgres>=2.0.0,<3.0.0",
-    "langchain-ollama>=0.3.0,<1.0.0",
-
-    # ── Web / API ────────────────────────────────────────────────────────────
+    # ── Core ────────────────────────────────────────────────────────────
     "fastapi>=0.115.0,<1.0.0",
     "uvicorn[standard]>=0.34.0,<1.0.0",
     "httpx>=0.28.0,<1.0.0",
-    "python-multipart>=0.0.20,<1.0.0",
-    "aiofiles>=24.0.0,<26.0.0",
-
-    # ── Pydantic / Settings ──────────────────────────────────────────────────
     "pydantic>=2.11.0,<3.0.0",
     "pydantic-settings>=2.7.0,<3.0.0",
-
-    # ── Auth ─────────────────────────────────────────────────────────────────
-    "pyjwt[crypto]>=2.10.0,<3.0.0",
-
-    # ── Storage / DB ─────────────────────────────────────────────────────────
-    "redis>=5.2.0,<6.0.0",
-    "psycopg[binary]>=3.2.0,<4.0.0",
+    "python-multipart>=0.0.20,<1.0.0",
+    "aiofiles>=24.0.0,<26.0.0",
+    # ── Anthropic / LangGraph ────────────────────────────────────────────
+    "anthropic>=0.40.0,<1.0.0",
+    "langchain>=0.3.0,<1.0.0",
+    "langchain-community>=0.3.0,<1.0.0",
+    "langchain-core>=0.3.0,<1.0.0",
+    "langgraph>=0.4.0,<1.0.0",
+    "langgraph-checkpoint-postgres>=2.0.0,<3.0.0",
+    "langchain-ollama>=0.3.0,<1.0.0",
+    "langchain-openai>=0.3.0,<1.0.0",
+    # ── MCP ─────────────────────────────────────────────────────────────
+    "fastmcp>=2.0.0,<3.0.0",
+    # ── Database ─────────────────────────────────────────────────────────
     "sqlalchemy>=2.0.0,<3.0.0",
-
-    # ── Document processing ──────────────────────────────────────────────────
+    "asyncpg>=0.31.0,<1.0.0",
+    "alembic>=1.13.0,<2.0.0",
+    "jsonschema>=4.23.0,<5.0.0",
+    "prometheus-client>=0.21.0,<1.0.0",
+    "redis[asyncio]>=5.2.0,<6.0.0",
+    # ── Vector DB ────────────────────────────────────────────────────────
+    "qdrant-client>=1.11.0,<2.0.0",
+    "faiss-cpu>=1.9.0,<2.0.0",
+    "sentence-transformers>=3.0.0,<4.0.0",
+    # ── Security ─────────────────────────────────────────────────────────
+    "pyjwt[crypto]>=2.10.0,<3.0.0",
+    "cryptography>=42.0.0",
+    # ── Document processing ──────────────────────────────────────────────
     "pypdf>=5.0.0,<6.0.0",
     "pymupdf>=1.24.0,<2.0.0",
-    "python-docx>=1.1.0,<2.0.0",
     "docx2txt>=0.8,<1.0",
     "openpyxl>=3.1.0,<4.0.0",
     "xlrd>=2.0.0,<3.0.0",
     "mammoth>=1.12.0,<2.0.0",
-
-    # ── NLP / ML ─────────────────────────────────────────────────────────────
-    "tiktoken>=0.9.0,<1.0.0",
-    "torch>=2.5.0,<3.0.0",
-
-    # ── Retry / Scheduling ───────────────────────────────────────────────────
+    "python-docx>=1.1.0,<2.0.0",
+    # ── Utils ─────────────────────────────────────────────────────────────
     "tenacity>=9.0.0,<10.0.0",
-    "apscheduler>=3.11.0,<4.0.0",
-
-    # ── FAISS / Embeddings (fallback для RAG) ────────────────────────────────
-    "faiss-cpu>=1.9.0,<2.0.0",
-    "sentence-transformers>=3.0.0,<4.0.0",
-
-    # ── NumPy ────────────────────────────────────────────────────────────────
-    "numpy>=2.0.0,<3.0.0",
-
-    # ── Async / FastAPI / AsyncIO ───────────────────────────────────────────
-    "asyncpg>=0.31.0,<1.0.0",
-
-    # ── Utils ────────────────────────────────────────────────────────────────
     "structlog>=25.1.0,<26.0.0",
-    "anyio>=4.7.0,<5.0.0",
     "jsonpath-ng>=1.7.0,<2.0.0",
     "typing-extensions>=4.12.0,<5.0.0",
     "requests>=2.32.0,<3.0.0",
-
-    # ── MCP / Vector DB / Observability / Migrations ──
-    "fastmcp>=2.0.0,<3.0.0",
-    "qdrant-client>=1.11.0,<2.0.0",
-    "jsonschema>=4.23.0,<5.0.0",
-    "prometheus-client>=0.21.0,<1.0.0",
-    "alembic>=1.13.0,<2.0.0"
+    "numpy>=2.0.0,<3.0.0",
+    "anyio>=4.7.0,<5.0.0",
+    "apscheduler>=3.11.2,<4.0.0",
 ]
 
 [project.urls]
-Homepage   = "https://github.com/your-org/edms-ai-assistant"
+Homepage = "https://github.com/your-org/edms-ai-assistant"
 Repository = "https://github.com/your-org/edms-ai-assistant"
-Issues     = "https://github.com/your-org/edms-ai-assistant/issues"
+Issues = "https://github.com/your-org/edms-ai-assistant/issues"
 
 [project.scripts]
 edms-assistant = "edms_ai_assistant.cli:main"
@@ -175,14 +157,15 @@ ignore = [
     "RUF002",
     "RUF003",
     "E501",
+    "B008", # FastAPI Depends()/Security() as default args — intentional pattern
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "edms_ai_assistant/generated/*" = ["ALL"]
-"**/__init__.py"                = ["F401"]
-"edms_ai_assistant/llm.py"      = ["F811"]
-"scripts/**"                    = ["T201", "F841"]
-"tests/**"                      = ["E402", "S101"]
+"**/__init__.py" = ["F401"]
+"edms_ai_assistant/llm.py" = ["F811"]
+"scripts/**" = ["T201", "F841"]
+"tests/**" = ["E402", "S101"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["edms_ai_assistant"]
@@ -195,7 +178,7 @@ indent-style = "space"
 # ─── Black ────────────────────────────────────────────────────────────────────
 
 [tool.black]
-line-length    = 88
+line-length = 88
 target-version = ["py313"]
 extend-exclude = "(generated|migrations)/"
 
@@ -203,25 +186,25 @@ extend-exclude = "(generated|migrations)/"
 # ─── isort ────────────────────────────────────────────────────────────────────
 
 [tool.isort]
-profile           = "black"
-line_length       = 88
+profile = "black"
+line_length = 88
 known_first_party = ["edms_ai_assistant"]
-skip_glob         = ["edms_ai_assistant/generated/*"]
+skip_glob = ["edms_ai_assistant/generated/*"]
 
 
 # ─── Mypy ─────────────────────────────────────────────────────────────────────
 
 [tool.mypy]
-python_version         = "3.13"
-strict                 = true
+python_version = "3.13"
+strict = true
 ignore_missing_imports = true
-check_untyped_defs     = true
-warn_return_any        = true
-warn_unused_configs    = true
-exclude                = ["edms_ai_assistant/generated/", "tests/"]
+check_untyped_defs = true
+warn_return_any = true
+warn_unused_configs = true
+exclude = ["edms_ai_assistant/generated/", "tests/"]
 
 [[tool.mypy.overrides]]
-module        = "edms_ai_assistant.generated.*"
+module = "edms_ai_assistant.generated.*"
 ignore_errors = true
 
 
@@ -229,7 +212,7 @@ ignore_errors = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths    = ["tests"]
-addopts      = "-ra -q --tb=short"
+testpaths = ["tests"]
+addopts = "-ra -q --tb=short"
 
 # uv add docx2txt

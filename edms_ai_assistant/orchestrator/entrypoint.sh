@@ -1,24 +1,48 @@
 #!/bin/bash
-set -e
+# orchestrator/entrypoint.sh
+set -eo pipefail
 
-echo "[entrypoint] Waiting for PostgreSQL..."
-until pg_isready -h "${POSTGRES_HOST:-postgres}" -U "${POSTGRES_USER:-edms}" -d "${POSTGRES_DB:-edms_ai}" 2>/dev/null; do
-  echo "[entrypoint] PostgreSQL not ready — retrying in 2s..."
-  sleep 2
+GREEN="\033[0;32m"; YELLOW="\033[1;33m"; RED="\033[0;31m"; NC="\033[0m"
+log()  { echo -e "${GREEN}[entrypoint]${NC} $*"; }
+warn() { echo -e "${YELLOW}[entrypoint]${NC} $*"; }
+err()  { echo -e "${RED}[entrypoint]${NC} $*" >&2; }
+
+DB_HOST="${POSTGRES_HOST:-postgres}"
+DB_PORT="${POSTGRES_PORT:-5432}"
+DB_USER="${POSTGRES_USER:-edms}"
+DB_NAME="${POSTGRES_DB:-edms_ai}"
+
+log "Waiting for PostgreSQL at ${DB_HOST}:${DB_PORT}..."
+for i in $(seq 1 30); do
+    if pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${DB_NAME}" -q 2>/dev/null; then
+        log "PostgreSQL ready (attempt ${i}/30)"
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        err "PostgreSQL not ready after 60s. Exiting."
+        exit 1
+    fi
+    warn "Retrying in 2s (${i}/30)..."
+    sleep 2
 done
-echo "[entrypoint] PostgreSQL is ready."
 
-# Инициализация схемы БД (idempotent — IF NOT EXISTS)
-if [ -f "/app/db_init_sql/01_init.sql" ]; then
-  echo "[entrypoint] Running DB init SQL..."
-  PGPASSWORD="${POSTGRES_PASSWORD:-edms_secret}" psql \
-    -h "${POSTGRES_HOST:-postgres}" \
-    -U "${POSTGRES_USER:-edms}" \
-    -d "${POSTGRES_DB:-edms_ai}" \
-    -f /app/db_init_sql/01_init.sql \
-    --on-error-stop 2>&1 | grep -E "ERROR|NOTICE|CREATE|INSERT" || true
-  echo "[entrypoint] DB init complete."
+log "Running Alembic migrations..."
+if alembic upgrade head; then
+    log "Migrations applied successfully"
+else
+    err "Alembic migration failed!"
+    exit 1
 fi
 
-echo "[entrypoint] Starting orchestrator on port ${API_PORT:-8002}..."
-exec python main.py
+APP_PORT="${API_PORT:-8002}"
+WORKERS="${ORCHESTRATOR_WORKERS:-1}"
+LOG_LVL=$(echo "${LOG_LEVEL:-info}" | tr '[:upper:]' '[:lower:]')
+
+log "Starting orchestrator on port ${APP_PORT} (workers: ${WORKERS})"
+exec uvicorn edms_ai_assistant.main:app \
+    --host "0.0.0.0" \
+    --port "${APP_PORT}" \
+    --workers "${WORKERS}" \
+    --log-level "${LOG_LVL}" \
+    --no-access-log \
+    --timeout-keep-alive 75

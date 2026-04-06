@@ -1,65 +1,42 @@
-# edms_ai_assistant\utils\format_utils.py
-import re
+# orchestrator/utils/format_utils.py
+"""Утилиты форматирования дат, чисел, текста для ответов агента."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
 
 
-def format_document_response(text_content: str) -> str:
-    formatted_content = (
-        text_content.replace(r"\n", "\n").replace(r"\t", "    ").replace(r"\"", '"')
-    )
-
-    junk_phrases = [
-        r"Похоже, произошла ошибка при попытке извлечь содержание вложения\.",
-        r"Я буду использовать другой подход для предоставления информации о документе\.",
-        r"Для получения более подробного содержания файла необходимо его извлечь и проанализировать\.",
-        r"Для получения более подробной информации о содержании вложения необходимо обратиться к соответствующему инструменту или сервису, который поддерживает извлечение содержимого документов\.",
-        r"Для получения более подробного содержания файла необходимо использовать дополнительный инструмент 'summarize_attachment_tool_wrapped'\.",
+def format_datetime_ru(dt: datetime | str | None) -> str:
+    """Форматирует datetime в русском формате: 01 января 2025, 14:30."""
+    if dt is None:
+        return "—"
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt)
+        except ValueError:
+            return dt
+    _MONTHS = [
+        "", "января", "февраля", "марта", "апреля", "мая", "июня",
+        "июля", "августа", "сентября", "октября", "ноября", "декабря",
     ]
+    local = dt.astimezone(timezone.utc)
+    return f"{local.day:02d} {_MONTHS[local.month]} {local.year}, {local.hour:02d}:{local.minute:02d}"
 
-    cleaned_content = formatted_content
-    for phrase in junk_phrases:
-        cleaned_content = re.sub(
-            phrase, "", cleaned_content, flags=re.IGNORECASE | re.DOTALL
-        ).strip()
 
-    lines = cleaned_content.split("\n")
-    filtered_lines = []
+def truncate(text: str, max_len: int = 200, suffix: str = "...") -> str:
+    """Обрезает текст до max_len символов."""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - len(suffix)] + suffix
 
-    unwanted_keywords = [
-        "ID документа:",
-        "ID вложения:",
-        "Размер:",
-        "Дата загрузки:",
-        "ID:",
-        "UUID",
-    ]
 
-    for line in lines:
-        is_unwanted = False
-
-        is_junk_header = False
-        if line.strip().startswith("## Информация о Документе"):
-            if any(phrase in line for phrase in ["Похоже", "ошибка"]):
-                is_junk_header = True
-
-        if is_junk_header:
-            continue
-
-        for keyword in unwanted_keywords:
-            if line.strip().startswith(f"- **{keyword}**") or line.strip().startswith(
-                f"- {keyword}"
-            ):
-                is_unwanted = True
-                break
-
-        if not is_unwanted and line.strip():
-            filtered_lines.append(line.rstrip())
-
-    formatted_content = "\n".join(filtered_lines)
-
-    if not formatted_content.strip().startswith(
-        "##"
-    ) and not formatted_content.strip().startswith("#"):
-        formatted_content = "## Информация о Документе\n\n" + formatted_content
-    formatted_content = re.sub(r"\n\s*\n", "\n\n", formatted_content).strip()
-
-    return formatted_content
+def pluralize_ru(n: int, one: str, few: str, many: str) -> str:
+    """Склоняет существительное по числу (1 документ, 2 документа, 5 документов)."""
+    n_abs = abs(n) % 100
+    if 11 <= n_abs <= 19:
+        return f"{n} {many}"
+    r = n_abs % 10
+    if r == 1:
+        return f"{n} {one}"
+    if 2 <= r <= 4:
+        return f"{n} {few}"
+    return f"{n} {many}"

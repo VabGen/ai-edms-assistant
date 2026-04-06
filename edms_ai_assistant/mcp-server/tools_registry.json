@@ -1,61 +1,57 @@
 {
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "Реестр MCP-инструментов EDMS AI Assistant",
   "tools": [
     {
       "name": "get_document",
-      "description_ru": "Получить документ по ID. Использовать когда пользователь упоминает конкретный номер документа или UUID. Ограничения: только чтение, возвращает последнюю версию.",
+      "description_ru": "Получить документ по UUID или номеру (DOC-XXXX). Использовать когда пользователь называет конкретный документ. Только чтение — не изменяет данные.",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "required": ["document_id"],
+        "additionalProperties": false,
         "properties": {
           "document_id": {
             "type": "string",
             "description": "UUID документа или номер вида DOC-12345",
-            "pattern": "^(DOC-\\d+|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|DOC-\\d{1,10})$"
           },
           "include_history": {
             "type": "boolean",
-            "description": "Включить историю изменений",
-            "default": false
+            "default": false,
+            "description": "Включить журнал изменений"
           },
           "include_attachments": {
             "type": "boolean",
-            "description": "Включить список вложений",
-            "default": true
+            "default": true,
+            "description": "Включить список вложений"
           }
-        },
-        "additionalProperties": false
+        }
       },
       "output_schema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {
-          "success": {"type": "boolean"},
+          "success": { "type": "boolean" },
           "data": {
             "type": "object",
             "properties": {
-              "id": {"type": "string"},
-              "number": {"type": "string"},
-              "title": {"type": "string"},
-              "type": {"type": "string"},
-              "status": {
-                "type": "string",
-                "enum": ["draft", "review", "approved", "rejected", "signed", "archived"]
-              },
-              "created_at": {"type": "string", "format": "date-time"},
-              "updated_at": {"type": "string", "format": "date-time"},
-              "author": {"type": "object"},
-              "assignees": {"type": "array"},
-              "attachments": {"type": "array"},
-              "metadata": {"type": "object"}
+              "id": { "type": "string" },
+              "number": { "type": "string" },
+              "title": { "type": "string" },
+              "type": { "type": "string" },
+              "status": { "type": "string", "enum": ["draft", "review", "approved", "rejected", "signed", "archived"] },
+              "created_at": { "type": "string", "format": "date-time" },
+              "updated_at": { "type": "string", "format": "date-time" },
+              "author": { "type": "object" },
+              "assignees": { "type": "array" },
+              "attachments": { "type": "array" }
             }
           },
           "error": {
             "type": ["object", "null"],
             "properties": {
-              "code": {"type": "string"},
-              "message": {"type": "string"}
+              "code": { "type": "string" },
+              "message": { "type": "string" }
             }
           }
         }
@@ -64,356 +60,219 @@
     },
     {
       "name": "search_documents",
-      "description_ru": "Поиск документов по фильтрам. Использовать для запросов вида 'найди договоры за прошлый месяц', 'покажи все документы на согласовании'. Поддерживает пагинацию.",
+      "description_ru": "Поиск документов по фильтрам: тип, статус, автор, дата, текст. Использовать для 'найди договоры', 'покажи документы на согласовании'. Поддерживает пагинацию.",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "query": {
-            "type": "string",
-            "description": "Полнотекстовый поиск по заголовку и содержимому",
-            "maxLength": 500
-          },
+          "query": { "type": "string", "maxLength": 500, "description": "Полнотекстовый поиск" },
           "status": {
             "type": "array",
-            "items": {
-              "type": "string",
-              "enum": ["draft", "review", "approved", "rejected", "signed", "archived"]
-            },
-            "description": "Фильтр по статусу"
+            "items": { "type": "string", "enum": ["draft", "review", "approved", "rejected", "signed", "archived"] }
           },
           "document_type": {
             "type": "array",
-            "items": {"type": "string"},
-            "description": "Фильтр по типу: договор, приказ, акт, счёт, протокол, спецификация"
+            "items": { "type": "string", "enum": ["договор", "приказ", "акт", "счёт", "протокол", "спецификация"] }
           },
-          "author_id": {
-            "type": "string",
-            "description": "UUID автора документа"
-          },
-          "assignee_id": {
-            "type": "string",
-            "description": "UUID ответственного"
-          },
-          "department": {
-            "type": "string",
-            "description": "Отдел/подразделение"
-          },
-          "date_from": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Дата создания от (ISO 8601)"
-          },
-          "date_to": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Дата создания до (ISO 8601)"
-          },
-          "page": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 1,
-            "description": "Номер страницы"
-          },
-          "page_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100,
-            "default": 20,
-            "description": "Количество записей на странице"
-          },
-          "sort_by": {
-            "type": "string",
-            "enum": ["created_at", "updated_at", "title", "status"],
-            "default": "updated_at"
-          },
-          "sort_order": {
-            "type": "string",
-            "enum": ["asc", "desc"],
-            "default": "desc"
-          }
-        },
-        "additionalProperties": false
+          "author_id": { "type": "string" },
+          "assignee_id": { "type": "string" },
+          "department": { "type": "string" },
+          "date_from": { "type": "string", "format": "date-time" },
+          "date_to": { "type": "string", "format": "date-time" },
+          "page": { "type": "integer", "minimum": 1, "default": 1 },
+          "page_size": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+          "sort_by": { "type": "string", "enum": ["created_at", "updated_at", "title", "status"], "default": "updated_at" },
+          "sort_order": { "type": "string", "enum": ["asc", "desc"], "default": "desc" }
+        }
       },
       "output_schema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {
-          "success": {"type": "boolean"},
+          "success": { "type": "boolean" },
           "data": {
             "type": "object",
             "properties": {
-              "items": {"type": "array"},
-              "total": {"type": "integer"},
-              "page": {"type": "integer"},
-              "page_size": {"type": "integer"},
-              "total_pages": {"type": "integer"}
+              "items": { "type": "array" },
+              "total": { "type": "integer" },
+              "page": { "type": "integer" },
+              "page_size": { "type": "integer" },
+              "total_pages": { "type": "integer" }
             }
           },
-          "error": {"type": ["object", "null"]}
+          "error": { "type": ["object", "null"] }
         }
       },
       "tags": ["read", "analytics"]
     },
     {
       "name": "create_document",
-      "description_ru": "Создать новый документ. Использовать только по явному запросу пользователя. ВНИМАНИЕ: необратимая операция. Обязательно подтвердить параметры перед созданием.",
+      "description_ru": "Создать новый документ. НЕОБРАТИМАЯ операция — использовать только по явному запросу пользователя после подтверждения параметров. Обязательно: title и document_type.",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "required": ["title", "document_type"],
+        "additionalProperties": false,
         "properties": {
-          "title": {
-            "type": "string",
-            "minLength": 3,
-            "maxLength": 500,
-            "description": "Название документа"
-          },
+          "title": { "type": "string", "minLength": 3, "maxLength": 500 },
           "document_type": {
             "type": "string",
-            "enum": ["договор", "приказ", "акт", "счёт", "протокол", "спецификация"],
-            "description": "Тип документа"
+            "enum": ["договор", "приказ", "акт", "счёт", "протокол", "спецификация"]
           },
-          "content": {
-            "type": "string",
-            "description": "Содержимое/описание документа"
-          },
-          "assignees": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "UUID ответственных сотрудников"
-          },
-          "department": {
-            "type": "string",
-            "description": "Отдел-владелец"
-          },
-          "due_date": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Срок исполнения (ISO 8601)"
-          },
-          "tags": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Теги для категоризации"
-          },
-          "metadata": {
-            "type": "object",
-            "description": "Дополнительные метаданные"
-          }
-        },
-        "additionalProperties": false
+          "content": { "type": "string", "description": "Содержимое/описание" },
+          "assignees": { "type": "array", "items": { "type": "string" }, "description": "UUID ответственных" },
+          "department": { "type": "string" },
+          "due_date": { "type": "string", "format": "date-time" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "metadata": { "type": "object" }
+        }
       },
       "output_schema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {
-          "success": {"type": "boolean"},
+          "success": { "type": "boolean" },
           "data": {
             "type": "object",
             "properties": {
-              "id": {"type": "string"},
-              "number": {"type": "string"},
-              "status": {"type": "string"},
-              "created_at": {"type": "string", "format": "date-time"}
+              "id": { "type": "string" },
+              "number": { "type": "string" },
+              "status": { "type": "string" },
+              "created_at": { "type": "string", "format": "date-time" }
             }
           },
-          "error": {"type": ["object", "null"]}
+          "error": { "type": ["object", "null"] }
         }
       },
       "tags": ["write"]
     },
     {
       "name": "update_document_status",
-      "description_ru": "Изменить статус документа (согласование, подписание, архивирование). Требует проверки прав пользователя. Деструктивная операция — требует подтверждения при переходе в 'rejected' или 'archived'.",
+      "description_ru": "Изменить статус документа. НЕОБРАТИМО при rejected/archived — требуется comment и подтверждение пользователя. Требует прав на изменение.",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "required": ["document_id", "new_status"],
+        "additionalProperties": false,
         "properties": {
-          "document_id": {
-            "type": "string",
-            "description": "UUID документа"
-          },
+          "document_id": { "type": "string" },
           "new_status": {
             "type": "string",
-            "enum": ["draft", "review", "approved", "rejected", "signed", "archived"],
-            "description": "Новый статус документа"
+            "enum": ["draft", "review", "approved", "rejected", "signed", "archived"]
           },
-          "comment": {
-            "type": "string",
-            "maxLength": 2000,
-            "description": "Комментарий к изменению статуса (обязателен для rejected)"
-          },
-          "notify_assignees": {
-            "type": "boolean",
-            "default": true,
-            "description": "Уведомить ответственных об изменении статуса"
-          }
-        },
-        "additionalProperties": false
+          "comment": { "type": "string", "maxLength": 2000, "description": "Обязателен при rejected/archived" },
+          "notify_assignees": { "type": "boolean", "default": true }
+        }
       },
       "output_schema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {
-          "success": {"type": "boolean"},
+          "success": { "type": "boolean" },
           "data": {
             "type": "object",
             "properties": {
-              "document_id": {"type": "string"},
-              "previous_status": {"type": "string"},
-              "new_status": {"type": "string"},
-              "changed_at": {"type": "string", "format": "date-time"},
-              "changed_by": {"type": "string"}
+              "document_id": { "type": "string" },
+              "previous_status": { "type": "string" },
+              "new_status": { "type": "string" },
+              "changed_at": { "type": "string", "format": "date-time" }
             }
           },
-          "error": {"type": ["object", "null"]}
+          "error": { "type": ["object", "null"] }
         }
       },
       "tags": ["write", "workflow"]
     },
     {
       "name": "get_document_history",
-      "description_ru": "Получить историю изменений документа: кто, когда и что менял. Использовать при вопросах об аудите, проверке действий, восстановлении последовательности событий.",
+      "description_ru": "История изменений документа: кто, что, когда. Использовать при вопросах об аудите, хронологии событий, проверке действий конкретного пользователя.",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "required": ["document_id"],
+        "additionalProperties": false,
         "properties": {
-          "document_id": {
-            "type": "string",
-            "description": "UUID документа"
-          },
+          "document_id": { "type": "string" },
           "event_types": {
             "type": "array",
             "items": {
               "type": "string",
               "enum": ["status_change", "edit", "comment", "assignment", "view", "download"]
-            },
-            "description": "Фильтр по типу событий"
+            }
           },
-          "date_from": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "date_to": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 500,
-            "default": 50
-          }
-        },
-        "additionalProperties": false
+          "date_from": { "type": "string", "format": "date-time" },
+          "date_to": { "type": "string", "format": "date-time" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 }
+        }
       },
       "output_schema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {
-          "success": {"type": "boolean"},
+          "success": { "type": "boolean" },
           "data": {
             "type": "object",
             "properties": {
-              "document_id": {"type": "string"},
-              "events": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "id": {"type": "string"},
-                    "event_type": {"type": "string"},
-                    "actor": {"type": "object"},
-                    "changes": {"type": "object"},
-                    "comment": {"type": "string"},
-                    "timestamp": {"type": "string", "format": "date-time"}
-                  }
-                }
-              },
-              "total_events": {"type": "integer"}
+              "document_id": { "type": "string" },
+              "events": { "type": "array" },
+              "total_events": { "type": "integer" }
             }
           },
-          "error": {"type": ["object", "null"]}
+          "error": { "type": ["object", "null"] }
         }
       },
       "tags": ["read", "analytics"]
     },
     {
       "name": "assign_document",
-      "description_ru": "Назначить ответственных за документ или изменить назначение. Использовать при запросах 'передай документ', 'назначь ответственным', 'добавь в согласующие'.",
+      "description_ru": "Назначить ответственных за документ с ролями (reviewer, approver, signer, observer). Использовать при 'передай документ', 'назначь согласующим', 'добавь подписанта'.",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "required": ["document_id", "assignees"],
+        "additionalProperties": false,
         "properties": {
-          "document_id": {
-            "type": "string",
-            "description": "UUID документа"
-          },
+          "document_id": { "type": "string" },
           "assignees": {
             "type": "array",
+            "minItems": 1,
             "items": {
               "type": "object",
               "required": ["user_id", "role"],
               "properties": {
-                "user_id": {"type": "string"},
-                "role": {
-                  "type": "string",
-                  "enum": ["reviewer", "approver", "signer", "observer"],
-                  "description": "Роль назначаемого"
-                },
-                "due_date": {
-                  "type": "string",
-                  "format": "date-time",
-                  "description": "Срок выполнения роли"
-                }
+                "user_id": { "type": "string" },
+                "role": { "type": "string", "enum": ["reviewer", "approver", "signer", "observer"] },
+                "due_date": { "type": "string", "format": "date-time" }
               }
-            },
-            "minItems": 1,
-            "description": "Список назначаемых с ролями"
+            }
           },
-          "replace_existing": {
-            "type": "boolean",
-            "default": false,
-            "description": "Заменить существующих назначенных"
-          },
-          "message": {
-            "type": "string",
-            "maxLength": 1000,
-            "description": "Сообщение назначаемым"
-          }
-        },
-        "additionalProperties": false
+          "replace_existing": { "type": "boolean", "default": false },
+          "message": { "type": "string", "maxLength": 1000 }
+        }
       },
       "output_schema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {
-          "success": {"type": "boolean"},
+          "success": { "type": "boolean" },
           "data": {
             "type": "object",
             "properties": {
-              "document_id": {"type": "string"},
-              "assigned": {"type": "array"},
-              "notified": {"type": "array"},
-              "assigned_at": {"type": "string", "format": "date-time"}
+              "document_id": { "type": "string" },
+              "assigned": { "type": "array" },
+              "notified": { "type": "array" },
+              "assigned_at": { "type": "string", "format": "date-time" }
             }
           },
-          "error": {"type": ["object", "null"]}
+          "error": { "type": ["object", "null"] }
         }
       },
       "tags": ["write", "workflow"]
     },
     {
       "name": "get_analytics",
-      "description_ru": "Получить аналитику по документам: статистика по статусам, типам, отделам, нагрузка на сотрудников. Использовать при вопросах об отчётах, дашбордах, метриках.",
+      "description_ru": "Аналитика документооборота: статистика статусов, нагрузка отделов, просроченные документы, коэффициент одобрения. Использовать при вопросах об отчётах и метриках.",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "required": ["metric_type"],
+        "additionalProperties": false,
         "properties": {
           "metric_type": {
             "type": "string",
@@ -425,102 +284,63 @@
               "workload_by_department",
               "overdue_documents",
               "approval_rate"
-            ],
-            "description": "Тип метрики"
+            ]
           },
-          "date_from": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "date_to": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "group_by": {
-            "type": "string",
-            "enum": ["day", "week", "month", "quarter"],
-            "default": "month"
-          },
-          "department": {
-            "type": "string",
-            "description": "Фильтр по отделу"
-          },
-          "document_type": {
-            "type": "string",
-            "description": "Фильтр по типу документа"
-          }
-        },
-        "additionalProperties": false
+          "date_from": { "type": "string", "format": "date-time" },
+          "date_to": { "type": "string", "format": "date-time" },
+          "group_by": { "type": "string", "enum": ["day", "week", "month", "quarter"], "default": "month" },
+          "department": { "type": "string" },
+          "document_type": { "type": "string" }
+        }
       },
       "output_schema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {
-          "success": {"type": "boolean"},
+          "success": { "type": "boolean" },
           "data": {
             "type": "object",
             "properties": {
-              "metric_type": {"type": "string"},
-              "period": {"type": "object"},
-              "results": {"type": "array"},
-              "summary": {"type": "object"},
-              "generated_at": {"type": "string", "format": "date-time"}
+              "metric_type": { "type": "string" },
+              "period": { "type": "object" },
+              "results": { "type": "array" },
+              "summary": { "type": "object" },
+              "generated_at": { "type": "string", "format": "date-time" }
             }
           },
-          "error": {"type": ["object", "null"]}
+          "error": { "type": ["object", "null"] }
         }
       },
       "tags": ["read", "analytics"]
     },
     {
       "name": "get_workflow_status",
-      "description_ru": "Получить текущий статус рабочего процесса документа: кто должен действовать, сколько ждёт согласования, просроченные задачи. Использовать при вопросах 'где застрял документ', 'кто ещё не согласовал'.",
+      "description_ru": "Текущий статус рабочего процесса документа: кто ещё не согласовал, ожидающие действия, просрочки, прогресс. Использовать при 'где застрял документ', 'кто не подписал'.",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "required": ["document_id"],
+        "additionalProperties": false,
         "properties": {
-          "document_id": {
-            "type": "string",
-            "description": "UUID документа"
-          },
-          "include_completed": {
-            "type": "boolean",
-            "default": false,
-            "description": "Включить завершённые шаги"
-          }
-        },
-        "additionalProperties": false
+          "document_id": { "type": "string" },
+          "include_completed": { "type": "boolean", "default": false }
+        }
       },
       "output_schema": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "properties": {
-          "success": {"type": "boolean"},
+          "success": { "type": "boolean" },
           "data": {
             "type": "object",
             "properties": {
-              "document_id": {"type": "string"},
-              "current_step": {"type": "string"},
-              "pending_actions": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "assignee": {"type": "object"},
-                    "role": {"type": "string"},
-                    "due_date": {"type": "string", "format": "date-time"},
-                    "is_overdue": {"type": "boolean"},
-                    "waiting_since": {"type": "string", "format": "date-time"}
-                  }
-                }
-              },
-              "completed_steps": {"type": "array"},
-              "overall_progress": {"type": "number"},
-              "estimated_completion": {"type": ["string", "null"], "format": "date-time"}
+              "document_id": { "type": "string" },
+              "current_step": { "type": "string" },
+              "pending_actions": { "type": "array" },
+              "completed_steps": { "type": "array" },
+              "overall_progress": { "type": "number", "minimum": 0, "maximum": 100 },
+              "estimated_completion": { "type": ["string", "null"], "format": "date-time" }
             }
           },
-          "error": {"type": ["object", "null"]}
+          "error": { "type": ["object", "null"] }
         }
       },
       "tags": ["read", "workflow"]

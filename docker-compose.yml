@@ -101,7 +101,7 @@ services:
     container_name: edms-mcp-server
     restart: unless-stopped
     environment:
-      EDMS_API_URL: ${EDMS_API_URL:-http://edms.company.local/api/v1}
+      EDMS_BASE_URL: ${EDMS_BASE_URL:-http://edms.company.local:8098}
       EDMS_API_KEY: ${EDMS_API_KEY:-}
       MCP_HOST: 0.0.0.0
       MCP_PORT: ${MCP_PORT:-8001}

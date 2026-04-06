@@ -1,255 +1,183 @@
 # EDMS AI Assistant
 
-ИИ-ассистент для корпоративной системы электронного документооборота на базе Claude (Anthropic) и MCP.
+ИИ-ассистент для корпоративной системы электронного документооборота.
 
 ## 1. Архитектура
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Пользователь                              │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │ POST /chat
-                            ▼
+│                    Chrome Extension / Web UI                     │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ POST /chat
+                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Orchestrator :8000                            │
-│                                                                  │
-│  NLU Preprocessor ──► bypass? ──► прямой MCP вызов             │
-│       │                    │                                     │
-│       └──► MultiAgentCoordinator                                 │
-│                │                                                 │
-│    ┌───────────┼───────────────────┐                            │
-│    ▼           ▼                   ▼                            │
-│  Planner   Researcher          Executor                         │
-│  (opus)    (haiku)             (sonnet)                         │
-│    │           │                   │                            │
-│    └───────────┼───────────────────┘                            │
-│                ▼                                                 │
-│           Reviewer (opus) ──► Explainer (haiku)                 │
-│                                                                  │
-│  MemoryManager: Short(buffer) + Medium(Redis) + Long(Postgres)  │
-│  RAGModule: Qdrant (primary) / FAISS (fallback)                 │
-└─────────────┬────────────────────────────────────────────────────┘
-              │ MCP calls
-              ▼
+│              Orchestrator  :8002  (FastAPI)                      │
+│                                                                   │
+│  EdmsDocumentAgent                                               │
+│  ├── Anthropic SDK (нативный tool_use)                          │
+│  ├── AsyncPostgresSaver  ← CHECKPOINT_DB_URL                    │
+│  ├── MCPClient (HTTP)    ← MCP_URL                              │
+│  └── SemanticDispatcher  (NLU, маршрутизация моделей)           │
+│                                                                   │
+│  ModelRouter:                                                    │
+│    haiku   → intent known + confidence>0.85 + readonly          │
+│    sonnet  → write ops, moderate complexity                      │
+│    opus    → planning, unknown intent, complex workflow          │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ HTTP POST /call
+                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    MCP Server :8001                              │
-│  8 инструментов: get/search/create/update/history/assign/...    │
-└─────────────────────────────────────────────────────────────────┘
-              │ REST API
-              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              Корпоративная EDMS система                          │
-└─────────────────────────────────────────────────────────────────┘
+│              MCP Server  :8001  (FastMCP)                        │
+│                                                                   │
+│  @mcp.tool() декораторы — единственный правильный API:          │
+│  get_document · search_documents · create_document               │
+│  update_document_status · get_document_history                   │
+│  assign_document · get_analytics · get_workflow_status           │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ HTTP
+                          ▼
+                   Java EDMS API (внешний)
 
-┌──────────────────────┐     ┌──────────────────────┐
-│  Feedback Collector  │     │     Monitoring        │
-│  :8002               │     │  Prometheus :9090     │
-│  APScheduler 03:00   │     │  Grafana :3000        │
-│  RAG daily update    │     │                       │
-└──────────────────────┘     └──────────────────────┘
+  PostgreSQL :5432    Redis :6379    Qdrant :6333
+  Prometheus :9090    Grafana :3000
+  Feedback   :8003
 ```
+
+**Ключевые архитектурные решения:**
+
+- MCP-сервер использует `@mcp.tool()` (FastMCP) — **не** LangChain `@tool`
+- Агент работает через нативный Anthropic SDK (`tool_use`), **не** через LangGraph граф
+- История тредов хранится в PostgreSQL через `AsyncPostgresSaver` (персистентно)
+- Инструменты вызываются по HTTP из агента через `MCPClient`, не импортируются напрямую
 
 ## 2. Быстрый старт
 
 ```bash
-# 1. Клонировать репозиторий
-git clone <repo-url>
-cd edms-ai
-
-# 2. Настроить конфигурацию
+# 1. Клонировать и настроить
+git clone https://github.com/your-org/edms-ai-assistant.git
+cd edms-ai-assistant
 cp .env.example .env
-# Обязательно заполнить:
-# ANTHROPIC_API_KEY=sk-ant-...
-# EDMS_API_URL=http://your-edms/api/v1
-# EDMS_API_KEY=your-key
-# POSTGRES_PASSWORD=secure-password
+# Заполнить обязательные поля: ANTHROPIC_API_KEY, POSTGRES_PASSWORD,
+# EDMS_API_URL, GRAFANA_ADMIN_PASSWORD
 
-# 3. Запустить
+# 2. Запустить
 docker compose up -d
 
-# 4. Проверить
-curl http://localhost:8000/health
+# 3. Проверить
+docker compose ps
+curl http://localhost:8002/health
 ```
 
-**Сервисы после запуска:**
-| Сервис | URL |
-|---|---|
-| Orchestrator API | http://localhost:8000 |
-| API Docs | http://localhost:8000/docs |
-| MCP Server | http://localhost:8001 |
-| Feedback Collector | http://localhost:8002 |
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 (admin/change-me) |
-
-## 3. Локальная разработка (без Docker)
+## 3. Локальная разработка
 
 ```bash
 # Зависимости
-cd orchestrator
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# .venv\Scripts\activate   # Windows
-pip install -r requirements.txt
+uv sync
 
-# PostgreSQL и Redis должны быть запущены локально
-# Или только инфраструктура через Docker:
+# Запустить инфраструктуру
 docker compose up -d postgres redis qdrant
 
+# MCP-сервер
+cd mcp-server && python run_server.py &
+
 # Миграции
-alembic upgrade head
+cd orchestrator && alembic upgrade head
 
-# Запуск оркестратора
-export $(cat ../.env | grep -v '^#' | xargs)
-export DATABASE_URL=postgresql+asyncpg://edms:change-me@localhost:5432/edms_ai
-export REDIS_URL=redis://localhost:6379/0
-export QDRANT_URL=http://localhost:6333
-python agent_orchestrator.py
-
-# MCP сервер (в отдельном терминале)
-cd ../mcp-server
-pip install -r requirements.txt
-python edms_mcp_server.py
+# Оркестратор
+cd orchestrator && python main.py
 ```
 
 ## 4. Добавление нового MCP-инструмента
 
-**Шаг 1:** Добавить описание в `mcp-server/tools_registry.json`:
-```json
-{
-  "name": "my_new_tool",
-  "description_ru": "Что делает инструмент и когда использовать",
-  "input_schema": { "type": "object", "properties": {...} },
-  "output_schema": { "type": "object", "properties": {...} },
-  "tags": ["read"]
-}
-```
-
-**Шаг 2:** Реализовать в `mcp-server/edms_mcp_server.py`:
 ```python
+# mcp-server/edms_mcp_server.py
 
+@mcp.tool(description="Описание на русском что делает инструмент")
+async def my_new_tool(
+    document_id: str,
+    param: str | None = None,
+) -> dict[str, Any]:
+    """
+    Подробное описание аргументов.
+
+    Args:
+        document_id: UUID документа.
+        param:       Опциональный параметр.
+    """
+    ts = _log_call("my_new_tool", {"document_id": document_id})
+
+    # Валидация
+    if not document_id:
+        return _err("INVALID_REQUEST", "document_id обязателен")
+
+    # HTTP-запрос к EDMS
+    result = await _request(
+        "POST",
+        f"/documents/{document_id}/my-action",
+        json_body={"param": param},
+        tool_name="my_new_tool",
+    )
+
+    _log_result("my_new_tool", ts, result["success"])
+    return result
 ```
 
-**Шаг 3:** Добавить в `orchestrator/multi_agent.py` в словарь `tool_schemas` класса `BaseAgent`.
-
-**Шаг 4:** Если инструмент read-only — добавить в `ResearcherAgent.allowed_tools`.
-           Если write — в `ExecutorAgent.allowed_tools`.
+FastMCP автоматически генерирует JSON Schema из аннотаций Python.
+Перезапусти `mcp-server`: `docker compose restart mcp-server`.
 
 ## 5. Обновление RAG-индекса
 
-RAG обновляется автоматически ежедневно в 03:00 UTC.
+Автоматически каждый день в `RAG_UPDATE_HOUR:00 UTC`.
 
-Ручное обновление:
+Ручной запуск:
 ```bash
-# Принудительный запуск
-curl -X POST http://localhost:8002/rag/trigger-update
-
-# Или через оркестратор (перестройка эмбеддингов)
-curl -X POST http://localhost:8000/rag/rebuild
-
-# Статистика RAG
-curl http://localhost:8000/health | jq .components.qdrant
+# Требует admin JWT
+curl -X POST http://localhost:8003/rag/trigger-update \
+  -H "Authorization: Bearer $ADMIN_JWT"
 ```
 
 ## 6. Мониторинг
 
-**Grafana дашборды** (http://localhost:3000):
-- EDMS Overview: запросы/сек, latency p95, error rate
-- Agent Performance: использование по агентам и моделям
-- RAG Quality: hit rate, avg similarity score
-- Feedback: позитивные/негативные оценки по времени
+- Grafana: http://localhost:3000
+- Prometheus: http://localhost:9090
+- Метрики оркестратора: http://localhost:8002/metrics
+- Метрики feedback: http://localhost:8003/metrics
 
-**Ключевые метрики Prometheus:**
-```
-edms_requests_total{intent, model, status}
-edms_latency_seconds_bucket{intent, model}
-edms_tool_calls_total{tool_name, success}
-edms_llm_tokens_total{model, type}
-edms_cache_hits_total
-edms_user_ratings_total{rating}
-```
+## 7. Troubleshooting
 
-## 7. Управление пользователями и ролями
-
-Профили хранятся в таблице `user_profiles`. Предпочтения задаются через поле `preferences` (JSONB):
-
-```json
-{
-  "preferred_language": "ru",
-  "default_page_size": 20,
-  "notification_enabled": true
-}
-```
-
-Доступ контролируется на уровне EDMS API (передаётся API-ключ пользователя).
-
-## 8. Troubleshooting
-
-**Проблема: MCP-сервер недоступен**
+**`ImportError: No module named 'edms_ai_assistant'`**
 ```bash
-docker compose logs mcp-server --tail=50
+cd orchestrator && pip install -e .
+```
+
+**MCP-сервер не отвечает**
+```bash
+docker compose logs mcp-server
 curl http://localhost:8001/health
-# Проверить EDMS_API_URL и EDMS_API_KEY в .env
+# Проверь EDMS_API_URL в .env
 ```
 
-**Проблема: Qdrant не запускается**
+**`AsyncPostgresSaver` не инициализируется**
 ```bash
-docker compose logs qdrant --tail=50
-# Проверить права на директорию qdrantdata
-docker volume inspect edms-ai_qdrantdata
-# Fallback на FAISS происходит автоматически
+# Установить psycopg v3 (не psycopg2!)
+pip install "psycopg[binary]>=3.2.0" langgraph-checkpoint-postgres
+# Проверить CHECKPOINT_DB_URL или DATABASE_URL
 ```
 
-**Проблема: Миграции не применяются**
+**Alembic: таблицы уже существуют**
 ```bash
-docker compose exec orchestrator alembic current
-docker compose exec orchestrator alembic upgrade head
-docker compose exec orchestrator alembic history
+cd orchestrator
+alembic stamp head  # пометить текущее состояние как применённое
 ```
 
-**Проблема: Claude не отвечает**
+**LLM timeout**
 ```bash
-# Проверить ключ
-echo $ANTHROPIC_API_KEY
-# Проверить лимиты в логах
-docker compose logs orchestrator | grep "anthropic"
+# Уменьшить AGENT_MAX_ITERATIONS и AGENT_TIMEOUT в .env
+# Или переключиться на более быструю модель
 ```
 
-**Проблема: Кэш не работает**
+**Redis недоступен**
 ```bash
-docker compose exec redis redis-cli ping
-docker compose exec redis redis-cli KEYS "edms:*" | head -20
-```
-
-**Проблема: RAG возвращает нерелевантные примеры**
-```bash
-# Запустить перестройку индекса
-curl -X POST http://localhost:8000/rag/rebuild
-# Проверить статистику
-curl http://localhost:8000/health
-```
-
-**Проблема: Высокая latency**
-```bash
-# Посмотреть метрики
-curl http://localhost:9090/api/v1/query?query=edms_latency_seconds_bucket
-# Переключить агентов на более лёгкие модели в .env:
-MODEL_RESEARCHER=claude-haiku-4-5
-MODEL_EXECUTOR=claude-haiku-4-5
-```
-
-**Проблема: Агент выбирает неверный инструмент**
-```bash
-# Посмотреть NLU результаты в логах
-docker compose logs orchestrator | grep "NLU result"
-# Добавить few-shot пример для этого типа запроса через feedback (rating=1)
-curl -X POST http://localhost:8002/feedback \
-  -H "Content-Type: application/json" \
-  -d '{"dialog_id": "...", "rating": 1}'
-```
-
-**Проблема: PostgreSQL соединения исчерпаны**
-```bash
-docker compose exec postgres psql -U edms -c "SELECT count(*) FROM pg_stat_activity;"
-# Уменьшить pool_size в DATABASE_URL или перезапустить сервисы
-docker compose restart orchestrator feedback-collector
+redis-cli -h $REDIS_HOST ping
+docker compose restart redis
 ```

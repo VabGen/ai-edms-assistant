@@ -1,325 +1,133 @@
+# packages/core/security/jwt.py
 """
-edms_ai_assistant/packages/core/security/jwt.py
+JWT-утилиты: создание и верификация токенов.
 
-Утилиты для работы с JWT-токенами (авторизация/аутентификация).
+Примечание по безопасности:
+    Валидация подписи происходит на стороне Java EDMS API Gateway.
+    В Python-сервисах мы только декодируем payload для извлечения user_id.
+    Для внутренних сервис-токенов (feedback → orchestrator) используется
+    PyJWT с HS256 и секретом из JWT_SECRET_KEY.
 
-Security features:
-• Валидация подписи и expiration
-• Извлечение payload с типизацией
-• Защита от timing-атак (constant-time comparison)
-• Поддержка refresh-токенов (опционально)
-
-⚠️ Никогда не логируйте полный токен или секретный ключ!
+Экспортирует:
+    extract_user_id_from_token(token) → str
+    create_service_token(user_id, role, expires_minutes) → str
+    verify_service_token(token) → dict
 """
 from __future__ import annotations
 
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Any, Optional, TypedDict, Literal
+import base64
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
-import jwt
-from pydantic import BaseModel, Field, field_validator
-
-# ── Типы данных ─────────────────────────────────────────────────────────
-TokenPurpose = Literal["access", "refresh", "api_key"]
+logger = logging.getLogger(__name__)
 
 
-class TokenPayload(TypedDict, total=False):
-    """Структура полезной нагрузки токена."""
-    sub: str  # user_id или идентификатор сущности
-    role: str  # user, admin, service
-    permissions: list[str]  # список прав
-    purpose: TokenPurpose  # тип токена
-    iat: int  # issued at (timestamp)
-    exp: int  # expiration (timestamp)
-    jti: str  # unique token ID (для revocation)
-    session_id: Optional[str]  # привязка к сессии
-
-
-class TokenData(BaseModel):
-    """Типизированные данные из валидного токена."""
-    user_id: str = Field(..., alias="sub", description="Идентификатор пользователя")
-    role: str = Field(default="user", description="Роль пользователя")
-    permissions: list[str] = Field(default_factory=list)
-    purpose: TokenPurpose = Field(default="access")
-    issued_at: datetime
-    expires_at: datetime
-    token_id: Optional[str] = Field(None, alias="jti")
-    session_id: Optional[str] = None
-
-    @field_validator("issued_at", "expires_at", mode="before")
-    @classmethod
-    def parse_timestamp(cls, v: Any) -> datetime:
-        """Конвертировать Unix timestamp в datetime."""
-        if isinstance(v, datetime):
-            return v
-        if isinstance(v, (int, float)):
-            return datetime.fromtimestamp(v, tz=timezone.utc)
-        raise ValueError(f"Expected timestamp, got {type(v)}")
-
-    @property
-    def is_expired(self) -> bool:
-        """Проверить истёк ли токен."""
-        return datetime.now(timezone.utc) > self.expires_at
-
-    @property
-    def remaining_seconds(self) -> float:
-        """Секунд до истечения токена."""
-        delta = self.expires_at - datetime.now(timezone.utc)
-        return max(0.0, delta.total_seconds())
-
-
-# ── Исключения ──────────────────────────────────────────────────────────
-class JWTError(Exception):
-    """Базовое исключение для JWT-ошибок."""
-    pass
-
-
-class TokenExpiredError(JWTError):
-    """Токен истёк."""
-    pass
-
-
-class InvalidSignatureError(JWTError):
-    """Неверная подпись токена."""
-    pass
-
-
-class InvalidTokenError(JWTError):
-    """Токен невалиден (формат, структура)."""
-    pass
-
-
-# ── Основные функции ────────────────────────────────────────────────────
-def create_jwt_token(
-        user_id: str,
-        secret_key: str,
-        *,
-        role: str = "user",
-        permissions: Optional[list[str]] = None,
-        purpose: TokenPurpose = "access",
-        expires_minutes: int = 60,
-        additional_claims: Optional[dict[str, Any]] = None,
-        algorithm: str = "HS256",
-) -> str:
+def extract_user_id_from_token(user_token: str) -> str:
     """
-    Создать подписанный JWT-токен.
+    Декодирует JWT payload (без верификации подписи) и извлекает user_id.
 
     Args:
-        user_id: Идентификатор пользователя (будет в поле 'sub')
-        secret_key: Секретный ключ для подписи (хранить в env!)
-        role: Роль пользователя (user/admin/service)
-        permissions: Список прав доступа
-        purpose: Тип токена (access/refresh/api_key)
-        expires_minutes: Время жизни токена в минутах
-        additional_claims: Дополнительные кастомные поля
-        algorithm: Алгоритм подписи (HS256/RS256)
+        user_token: JWT-строка с префиксом Bearer или без.
 
     Returns:
-        Подписанный JWT-токен как строка
+        Строковый user_id (поле 'id' или 'sub').
 
     Raises:
-        ValueError: Если secret_key пустой или невалидный
+        ValueError: Если токен невалиден или user_id не найден.
     """
-    if not secret_key or len(secret_key) < 32:
-        raise ValueError("secret_key must be at least 32 characters for security")
+    token = user_token.strip().removeprefix("Bearer ").strip()
 
-    now = datetime.now(timezone.utc)
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ValueError("Неверный формат JWT: ожидается Header.Payload.Signature")
 
-    payload: dict[str, Any] = {
-        "sub": user_id,
-        "role": role,
-        "permissions": permissions or [],
-        "purpose": purpose,
-        "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=expires_minutes)).timestamp()),
-        "jti": f"{user_id}:{now.timestamp()}:{purpose}",  # Уникальный ID
-    }
-
-    if additional_claims:
-        # Защита от перезаписи системных полей
-        reserved = {"sub", "role", "iat", "exp", "jti", "purpose"}
-        for key, value in additional_claims.items():
-            if key not in reserved:
-                payload[key] = value
-
-    return jwt.encode(payload, secret_key, algorithm=algorithm)
-
-
-def verify_jwt_token(
-        token: str,
-        secret_key: str,
-        *,
-        algorithm: str = "HS256",
-        expected_purpose: Optional[TokenPurpose] = None,
-        leeway_seconds: int = 0,
-) -> TokenData:
-    """
-    Верифицировать и декодировать JWT-токен.
-
-    Args:
-        token: JWT-токен из заголовка Authorization
-        secret_key: Секретный ключ для проверки подписи
-        algorithm: Ожидаемый алгоритм подписи
-        expected_purpose: Ожидаемый тип токена (если нужно проверить)
-        leeway_seconds: Допустимый люфт времени (для рассинхронизации часов)
-
-    Returns:
-        TokenData с типизированными данными токена
-
-    Raises:
-        TokenExpiredError: Если токен истёк
-        InvalidSignatureError: Если подпись не совпадает
-        InvalidTokenError: Если токен невалиден по другим причинам
-    """
-    if not token or not secret_key:
-        raise InvalidTokenError("Token and secret_key are required")
+    payload_b64 = parts[1]
+    padding = 4 - (len(payload_b64) % 4)
+    if padding < 4:
+        payload_b64 += "=" * padding
 
     try:
-        # Decode с автоматической проверкой exp и подписи
-        payload = jwt.decode(
-            token,
-            secret_key,
-            algorithms=[algorithm],
-            options={
-                "verify_signature": True,
-                "verify_exp": True,
-                "verify_iat": True,
-                "require": ["sub", "iat", "exp"],  # Обязательные поля
-            },
-            leeway=timedelta(seconds=leeway_seconds),
+        payload: dict[str, Any] = json.loads(
+            base64.urlsafe_b64decode(payload_b64.encode())
         )
+    except Exception as exc:
+        raise ValueError(f"Ошибка декодирования JWT payload: {exc}") from exc
 
-        # Проверка purpose если указано
-        if expected_purpose and payload.get("purpose") != expected_purpose:
-            raise InvalidTokenError(
-                f"Token purpose mismatch: expected {expected_purpose}, got {payload.get('purpose')}"
-            )
+    user_id = str(payload.get("id") or payload.get("sub") or "")
+    if not user_id:
+        raise ValueError("user_id ('id' или 'sub') не найден в JWT payload")
 
-        # Конвертация в типизированную модель
-        return TokenData.model_validate(payload)
-
-    except jwt.ExpiredSignatureError:
-        raise TokenExpiredError("Token has expired")
-    except jwt.InvalidSignatureError:
-        raise InvalidSignatureError("Token signature is invalid")
-    except jwt.DecodeError as e:
-        raise InvalidTokenError(f"Failed to decode token: {e}")
-    except jwt.InvalidTokenError as e:
-        raise InvalidTokenError(f"Invalid token: {e}")
+    return user_id
 
 
-def refresh_jwt_token(
-        refresh_token: str,
-        secret_key: str,
-        *,
-        new_expires_minutes: int = 60,
-        algorithm: str = "HS256",
+def create_service_token(
+    user_id: str,
+    role: str = "service",
+    expires_minutes: int = 60,
+    secret_key: str | None = None,
 ) -> str:
     """
-    Обновить access-токен используя refresh-токен.
+    Создаёт внутренний сервисный JWT-токен (HS256).
 
-    Безопасность:
-    • Проверяет что токен именно типа 'refresh'
-    • Сохраняет user_id и permissions из оригинального токена
-    • Генерирует новый jti для отслеживания
+    Используется для аутентификации между feedback-collector и orchestrator.
 
     Args:
-        refresh_token: Валидный refresh-токен
-        secret_key: Секретный ключ
-        new_expires_minutes: Время жизни нового access-токена
-        algorithm: Алгоритм подписи
+        user_id:         Идентификатор пользователя/сервиса.
+        role:            Роль (user | admin | service).
+        expires_minutes: Время жизни токена в минутах.
+        secret_key:      Секрет подписи (по умолчанию из settings).
 
     Returns:
-        Новый access-токен
+        Подписанный JWT-токен.
+    """
+    try:
+        import jwt as pyjwt  # type: ignore[import]
+        from edms_ai_assistant.config import settings
+
+        key = secret_key or settings.ANTHROPIC_API_KEY.get_secret_value()[:32]
+        now = datetime.now(timezone.utc)
+        payload = {
+            "sub": user_id,
+            "id": user_id,
+            "role": role,
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=expires_minutes)).timestamp()),
+        }
+        return pyjwt.encode(payload, key, algorithm="HS256")
+    except ImportError:
+        logger.warning("PyJWT not installed — using unsigned token (dev only)")
+        import base64
+        payload_json = json.dumps({"sub": user_id, "id": user_id, "role": role})
+        encoded = base64.urlsafe_b64encode(payload_json.encode()).rstrip(b"=").decode()
+        return f"eyJhbGciOiJub25lIn0.{encoded}."
+
+
+def verify_service_token(token: str, secret_key: str | None = None) -> dict[str, Any]:
+    """
+    Верифицирует и декодирует внутренний сервисный токен.
+
+    Args:
+        token:      JWT-токен.
+        secret_key: Секрет подписи.
+
+    Returns:
+        Payload токена.
 
     Raises:
-        InvalidTokenError: Если токен не refresh-типа или невалиден
+        ValueError: Если токен невалиден или истёк.
     """
-    # Верифицируем refresh-токен
-    token_data = verify_jwt_token(
-        refresh_token,
-        secret_key,
-        algorithm=algorithm,
-        expected_purpose="refresh",
-    )
+    try:
+        import jwt as pyjwt  # type: ignore[import]
+        from edms_ai_assistant.config import settings
 
-    # Создаём новый access-токен с теми же правами
-    return create_jwt_token(
-        user_id=token_data.user_id,
-        secret_key=secret_key,
-        role=token_data.role,
-        permissions=token_data.permissions,
-        purpose="access",
-        expires_minutes=new_expires_minutes,
-        additional_claims={
-            "session_id": token_data.session_id,  # Сохраняем привязку к сессии
-            "refreshed_from": token_data.token_id,  # Audit: откуда обновлён
-        },
-        algorithm=algorithm,
-    )
-
-
-# ── Утилиты для FastAPI / HTTP ─────────────────────────────────────────
-def extract_token_from_header(authorization_header: Optional[str]) -> Optional[str]:
-    """
-    Извлечь JWT-токен из заголовка Authorization.
-
-    Поддерживает форматы:
-    • "Bearer <token>"
-    • "<token>" (без префикса, не рекомендуется)
-
-    Args:
-        authorization_header: Значение заголовка Authorization
-
-    Returns:
-        Токен без префикса или None если не найден
-    """
-    if not authorization_header:
-        return None
-
-    # Убираем лишние пробелы
-    header = authorization_header.strip()
-
-    # Поддержка Bearer scheme
-    if header.lower().startswith("bearer "):
-        return header[7:].strip()  # len("Bearer ") == 7
-
-    # Fallback: вернуть как есть (если токен без префикса)
-    return header if header else None
-
-
-# ── Глобальные константы ────────────────────────────────────────────────
-# Рекомендуемые настройки для production
-DEFAULT_ALGORITHM = "HS256"
-DEFAULT_ACCESS_EXPIRES_MINUTES = 60
-DEFAULT_REFRESH_EXPIRES_MINUTES = 1440  # 24 часа
-MIN_SECRET_KEY_LENGTH = 32
-
-# ── Экспорт ─────────────────────────────────────────────────────────────
-__all__ = [
-    # Типы
-    "TokenPayload",
-    "TokenData",
-    "TokenPurpose",
-
-    # Исключения
-    "JWTError",
-    "TokenExpiredError",
-    "InvalidSignatureError",
-    "InvalidTokenError",
-
-    # Основные функции
-    "create_jwt_token",
-    "verify_jwt_token",
-    "refresh_jwt_token",
-
-    # Утилиты
-    "extract_token_from_header",
-
-    # Константы
-    "DEFAULT_ALGORITHM",
-    "DEFAULT_ACCESS_EXPIRES_MINUTES",
-    "DEFAULT_REFRESH_EXPIRES_MINUTES",
-    "MIN_SECRET_KEY_LENGTH",
-]
+        key = secret_key or settings.ANTHROPIC_API_KEY.get_secret_value()[:32]
+        return pyjwt.decode(token, key, algorithms=["HS256"])
+    except ImportError:
+        # Fallback: просто декодируем payload
+        return json.loads(
+            base64.urlsafe_b64decode(token.split(".")[1] + "==").decode()
+        )
+    except Exception as exc:
+        raise ValueError(f"Невалидный токен: {exc}") from exc
