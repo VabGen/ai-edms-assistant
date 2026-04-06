@@ -31,7 +31,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from llm import LLMClient, LLMResponse, get_llm_client
+from edms_ai_assistant.mcp_server.llm import LLMClient, LLMResponse, get_llm_client
 
 logger = logging.getLogger(__name__)
 

@@ -40,7 +40,7 @@ from starlette.middleware.cors import CORSMiddleware
 from edms_ai_assistant.orchestrator.agent import EdmsDocumentAgent
 from edms_ai_assistant.orchestrator.api.routes.cache import router as cache_router
 from edms_ai_assistant.orchestrator.api.routes.settings import router as settings_router
-from edms_ai_assistant.orchestrator.config import settings
+from config import settings
 from edms_ai_assistant.orchestrator.db.database import init_db
 from edms_ai_assistant.orchestrator.model import (
     AssistantResponse,

@@ -22,8 +22,8 @@ from typing import Any
 
 import httpx
 
-from edms_ai_assistant.orchestrator.config import settings
-from edms_ai_assistant.orchestrator.llm import LLMClient, LLMResponse, get_llm_client
+from config import settings
+from edms_ai_assistant.mcp_server.llm import LLMClient, LLMResponse, get_llm_client
 
 logger = logging.getLogger(__name__)
 

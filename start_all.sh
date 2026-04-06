@@ -175,7 +175,7 @@ cmd_logs() {
         docker compose -f "$COMPOSE_FILE" logs -f --tail=50
     else
         # Локальные логи
-        log_files=("${LOG_DIR}"/orchestrator.log "${LOG_DIR}"/mcp-server.log "${LOG_DIR}"/feedback.log)
+        log_files=("${LOG_DIR}"/orchestrator.log "${LOG_DIR}"/mcp_server.log "${LOG_DIR}"/feedback.log)
         existing=()
         for f in "${log_files[@]}"; do
             [ -f "$f" ] && existing+=("$f")

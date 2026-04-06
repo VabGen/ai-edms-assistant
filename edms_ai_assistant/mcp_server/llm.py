@@ -32,6 +32,8 @@ from typing import Any
 
 import httpx
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 # ── Конфигурация из .env ──────────────────────────────────────────────────
@@ -417,6 +419,55 @@ class LLMClient:
             "explainer":  _MODEL_EXPLAINER,
         }
         return role_map.get(role, os.getenv("MODEL_NAME", "gpt-oss:120b-cloud"))
+
+    # mcp-server/llm.py
+    """
+    LLM-хелпер для MCP-сервера.
+    Используется в reference_client (find_best_subject) и appeal_extraction_service.
+    """
+
+
+    async def get_llm_response(prompt: str, system: str | None = None) -> str:
+        """
+        Получить ответ от LLM через OpenAI-compatible API.
+
+        Args:
+            prompt: Пользовательское сообщение.
+            system: Системный промпт (опционально).
+
+        Returns:
+            Текстовый ответ модели.
+        """
+        base_url = settings.LLM_GENERATIVE_URL.rstrip("/")
+        model = settings.LLM_GENERATIVE_MODEL
+
+        messages: list[dict[str, Any]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": settings.LLM_MAX_TOKENS,
+            "temperature": settings.LLM_TEMPERATURE,
+            "stream": False,
+        }
+
+        async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+            response = await client.post(
+                f"{base_url}/v1/chat/completions",
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        choices = data.get("choices", [])
+        if not choices:
+            return ""
+
+        message = choices[0].get("message", {})
+        return message.get("content", "").strip()
 
 
 # ── Синглтон ──────────────────────────────────────────────────────────────

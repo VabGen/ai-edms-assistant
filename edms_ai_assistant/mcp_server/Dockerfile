@@ -1,4 +1,4 @@
-# mcp-server/Dockerfile
+# mcp_server/Dockerfile
 FROM python:3.12-slim AS builder
 
 WORKDIR /build

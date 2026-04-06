@@ -14,10 +14,9 @@ Embeddings: sentence-transformers paraphrase-multilingual-MiniLM-L12-v2
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 

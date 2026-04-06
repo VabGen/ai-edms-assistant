@@ -18,9 +18,9 @@ scrape_configs:
     metrics_path: /metrics
     scrape_interval: 15s
 
-  - job_name: mcp-server
+  - job_name: mcp_server
     static_configs:
-      - targets: ["mcp-server:8001"]
+      - targets: ["mcp_server:8001"]
     metrics_path: /metrics
     scrape_interval: 30s
 

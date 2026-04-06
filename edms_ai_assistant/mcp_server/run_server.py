@@ -1,4 +1,4 @@
-# mcp-server/run_server.py
+# mcp_server/run_server.py
 """
 Точка запуска EDMS MCP Server.
 

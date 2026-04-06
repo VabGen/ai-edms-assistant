@@ -122,9 +122,9 @@ services:
   # ──────────────────────────────────────────────────
   mcp-server:
     build:
-      context: ./edms_ai_assistant/mcp-server
+      context: edms_ai_assistant/mcp_server
       dockerfile: Dockerfile
-    container_name: edms-mcp-server
+    container_name: edms-mcp_server
     restart: unless-stopped
     environment:
       EDMS_BASE_URL: ${EDMS_BASE_URL:-http://host.docker.internal:8098}
