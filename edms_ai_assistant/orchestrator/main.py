@@ -37,20 +37,20 @@ from fastapi import (
 )
 from starlette.middleware.cors import CORSMiddleware
 
-from agent import EdmsDocumentAgent
-from api.routes.cache import router as cache_router
-from api.routes.settings import router as settings_router
-from config import settings
-from db.database import init_db
-from model import (
+from edms_ai_assistant.orchestrator.agent import EdmsDocumentAgent
+from edms_ai_assistant.orchestrator.api.routes.cache import router as cache_router
+from edms_ai_assistant.orchestrator.api.routes.settings import router as settings_router
+from edms_ai_assistant.orchestrator.config import settings
+from edms_ai_assistant.orchestrator.db.database import init_db
+from edms_ai_assistant.orchestrator.model import (
     AssistantResponse,
     FileUploadResponse,
     NewChatRequest,
     UserInput,
 )
-from security import extract_user_id_from_token
-from services.document_service import close_redis, init_redis
-from utils.regex_utils import UUID_RE
+from edms_ai_assistant.orchestrator.security import extract_user_id_from_token
+from edms_ai_assistant.orchestrator.services.document_service import close_redis, init_redis
+from edms_ai_assistant.orchestrator.utils.regex_utils import UUID_RE
 
 logging.basicConfig(
     level=settings.LOGGING_LEVEL,
@@ -298,7 +298,7 @@ async def metrics() -> dict:
 
 if __name__ == "__main__":
     uvicorn.run(
-        "edms_ai_assistant.main:app",
+        "edms_ai_assistant.orchestrator.main:app",
         host="0.0.0.0",
         port=settings.API_PORT,
         reload=settings.DEBUG,

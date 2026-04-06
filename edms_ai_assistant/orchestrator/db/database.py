@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from edms_ai_assistant.config import settings
+from ..config import settings
 
 
 class Base(DeclarativeBase):
@@ -95,8 +95,8 @@ class SummarizationCache(Base):
 
 
 async def get_cached_summary(
-    file_identifier: str,
-    summary_type: str,
+        file_identifier: str,
+        summary_type: str,
 ) -> str | None:
     """Возвращает кэшированную суммаризацию или None."""
     async with get_session() as session:
@@ -111,9 +111,9 @@ async def get_cached_summary(
 
 
 async def save_summary_cache(
-    file_identifier: str,
-    summary_type: str,
-    content: str,
+        file_identifier: str,
+        summary_type: str,
+        content: str,
 ) -> None:
     """Сохраняет суммаризацию в кэш (upsert)."""
     from sqlalchemy.dialects.postgresql import insert as pg_insert

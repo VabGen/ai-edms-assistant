@@ -7,8 +7,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, func, select
 
-from edms_ai_assistant.db.database import SummarizationCache, get_session
-from edms_ai_assistant.security import extract_user_id_from_token
+from edms_ai_assistant.orchestrator.db.database import SummarizationCache, get_session
+from edms_ai_assistant.orchestrator.security import extract_user_id_from_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/cache", tags=["Cache"])

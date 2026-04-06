@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body
 
-from edms_ai_assistant.config import settings
+from edms_ai_assistant.orchestrator.config import settings
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 

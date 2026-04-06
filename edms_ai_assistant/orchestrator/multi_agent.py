@@ -2,16 +2,18 @@
 """
 Мульти-агентная координация EDMS AI Assistant.
 
+ИЗМЕНЕНИЕ: использует LLMClient (llm.py) вместо прямого anthropic.AsyncAnthropic.
+Модели берутся из .env через resolve_model() / model_for_role().
+
 Пять специализированных агентов + координатор.
-Все агенты используют нативный Anthropic SDK (tool_use).
 Инструменты вызываются через MCPClient по HTTP.
 
 Агенты:
-    PlannerAgent    — JSON-план для задач с ≥2 шагами (claude-opus)
-    ResearcherAgent — только read-only MCP операции (claude-haiku)
-    ExecutorAgent   — только write MCP операции (claude-sonnet)
-    ReviewerAgent   — проверяет результаты при risk_level=high (claude-opus)
-    ExplainerAgent  — финальный ответ на русском (claude-haiku)
+    PlannerAgent    — JSON-план для задач с ≥2 шагами
+    ResearcherAgent — только read-only MCP операции
+    ExecutorAgent   — только write MCP операции
+    ReviewerAgent   — проверяет результаты при risk_level=high
+    ExplainerAgent  — финальный ответ на русском
 
 MultiAgentCoordinator:
     Простой запрос     → ReAct в одном цикле → Explainer
@@ -29,16 +31,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-import anthropic
+from llm import LLMClient, LLMResponse, get_llm_client
 
 logger = logging.getLogger(__name__)
-
-# ── Модели по ролям ───────────────────────────────────────────────────────
-MODEL_PLANNER = "claude-opus-4-5"
-MODEL_RESEARCHER = "claude-haiku-4-5"
-MODEL_EXECUTOR = "claude-sonnet-4-6"
-MODEL_REVIEWER = "claude-opus-4-5"
-MODEL_EXPLAINER = "claude-haiku-4-5"
 
 _MAX_TOOL_ITERS = 8
 
@@ -95,17 +90,22 @@ class BaseAgent(ABC):
     """
     Базовый класс для всех специализированных агентов.
 
-    Использует нативный Anthropic SDK (tool_use).
+    Использует LLMClient (поддерживает Ollama и Anthropic).
     Инструменты вызываются через MCPClient по HTTP.
     """
 
     name: str = "base"
     allowed_tools: list[str] = []
-    model: str = MODEL_EXPLAINER
+    role: str = "executor"  # planner | researcher | executor | reviewer | explainer
 
-    def __init__(self, mcp_client: Any, anthropic_client: anthropic.AsyncAnthropic) -> None:
+    def __init__(self, mcp_client: Any, llm_client: LLMClient) -> None:
         self._mcp = mcp_client
-        self._client = anthropic_client
+        self._llm = llm_client
+        self._model = llm_client.model_for_role(self.role)
+
+    @property
+    def model(self) -> str:
+        return self._model
 
     @property
     @abstractmethod
@@ -119,10 +119,7 @@ class BaseAgent(ABC):
         ...
 
     def _get_tools_schema(self) -> list[dict[str, Any]]:
-        """
-        Фильтрует инструменты из MCPClient по allowed_tools.
-        Возвращает список в формате Anthropic tools.
-        """
+        """Фильтрует инструменты из MCPClient по allowed_tools."""
         all_tools: list[dict[str, Any]] = self._mcp.cached_tools if hasattr(self._mcp, "cached_tools") else []
         if not self.allowed_tools:
             return []
@@ -133,17 +130,15 @@ class BaseAgent(ABC):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 2048,
-    ) -> anthropic.types.Message:
-        """Вызывает Anthropic API с заданными параметрами."""
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "system": self.system_prompt,
-            "messages": messages,
-        }
-        if tools:
-            kwargs["tools"] = tools
-        return await self._client.messages.create(**kwargs)
+    ) -> LLMResponse:
+        """Вызывает LLM через LLMClient."""
+        return await self._llm.create(
+            model=self._model,
+            messages=messages,
+            tools=tools or None,
+            system=self.system_prompt,
+            max_tokens=max_tokens,
+        )
 
     async def _react_loop(
         self,
@@ -164,9 +159,9 @@ class BaseAgent(ABC):
         for _ in range(_MAX_TOOL_ITERS):
             response = await self._call_llm(messages, tools=tools or None)
 
-            assistant_blocks = []
+            assistant_blocks: list[dict[str, Any]] = []
             for block in response.content:
-                if hasattr(block, "text") and block.text:
+                if block.type == "text" and block.text:
                     last_text = block.text
                     assistant_blocks.append({"type": "text", "text": block.text})
                 elif block.type == "tool_use":
@@ -188,7 +183,7 @@ class BaseAgent(ABC):
             # Выполняем tool_use
             tool_results = []
             for block in response.content:
-                if not hasattr(block, "type") or block.type != "tool_use":
+                if block.type != "tool_use":
                     continue
 
                 result = await self._mcp.call_tool(block.name, block.input or {})
@@ -215,10 +210,10 @@ class BaseAgent(ABC):
         except json.JSONDecodeError:
             return None
 
-    def _text_from_response(self, response: anthropic.types.Message) -> str:
+    def _text_from_response(self, response: LLMResponse) -> str:
         """Извлекает весь текст из ответа LLM."""
         return "".join(
-            block.text for block in response.content if hasattr(block, "text")
+            block.text for block in response.content if block.type == "text"
         ).strip()
 
 
@@ -226,15 +221,11 @@ class BaseAgent(ABC):
 
 
 class PlannerAgent(BaseAgent):
-    """
-    Строит JSON-план для многошаговых задач.
-    Не вызывает инструменты — только планирует.
-    Использует claude-opus для максимального качества.
-    """
+    """Строит JSON-план для многошаговых задач."""
 
     name = "planner"
     allowed_tools: list[str] = []
-    model = MODEL_PLANNER
+    role = "planner"
 
     @property
     def system_prompt(self) -> str:
@@ -297,7 +288,7 @@ WRITE: create_document, update_document_status, assign_document
                     success=False,
                     output={},
                     error="Планировщик не вернул валидный JSON",
-                    model_used=self.model,
+                    model_used=self._model,
                     latency_ms=int((time.monotonic() - start_ts) * 1000),
                 )
 
@@ -328,7 +319,7 @@ WRITE: create_document, update_document_status, assign_document
                 success=True,
                 output={"plan": plan},
                 reasoning=reasoning,
-                model_used=self.model,
+                model_used=self._model,
                 latency_ms=int((time.monotonic() - start_ts) * 1000),
             )
 
@@ -339,7 +330,7 @@ WRITE: create_document, update_document_status, assign_document
                 success=False,
                 output={},
                 error=str(exc),
-                model_used=self.model,
+                model_used=self._model,
                 latency_ms=int((time.monotonic() - start_ts) * 1000),
             )
 
@@ -348,14 +339,14 @@ WRITE: create_document, update_document_status, assign_document
 
 
 class ResearcherAgent(BaseAgent):
-    """Только read-only MCP-операции. Лёгкая модель."""
+    """Только read-only MCP-операции."""
 
     name = "researcher"
     allowed_tools = [
         "get_document", "search_documents",
         "get_document_history", "get_workflow_status", "get_analytics",
     ]
-    model = MODEL_RESEARCHER
+    role = "researcher"
 
     @property
     def system_prompt(self) -> str:
@@ -384,7 +375,7 @@ class ResearcherAgent(BaseAgent):
                 output={"research_results": text, "tool_calls": tool_calls},
                 reasoning=text,
                 tool_calls=tool_calls,
-                model_used=self.model,
+                model_used=self._model,
                 latency_ms=int((time.monotonic() - start_ts) * 1000),
             )
         except Exception as exc:
@@ -394,7 +385,7 @@ class ResearcherAgent(BaseAgent):
                 success=False,
                 output={},
                 error=str(exc),
-                model_used=self.model,
+                model_used=self._model,
                 latency_ms=int((time.monotonic() - start_ts) * 1000),
             )
 
@@ -403,13 +394,13 @@ class ResearcherAgent(BaseAgent):
 
 
 class ExecutorAgent(BaseAgent):
-    """Только write MCP-операции. Средняя модель для баланса качества."""
+    """Только write MCP-операции."""
 
     name = "executor"
     allowed_tools = [
         "create_document", "update_document_status", "assign_document",
     ]
-    model = MODEL_EXECUTOR
+    role = "executor"
 
     @property
     def system_prompt(self) -> str:
@@ -446,7 +437,7 @@ class ExecutorAgent(BaseAgent):
                 output={"execution_results": text, "tool_calls": tool_calls},
                 reasoning=text,
                 tool_calls=tool_calls,
-                model_used=self.model,
+                model_used=self._model,
                 latency_ms=int((time.monotonic() - start_ts) * 1000),
             )
         except Exception as exc:
@@ -456,7 +447,7 @@ class ExecutorAgent(BaseAgent):
                 success=False,
                 output={},
                 error=str(exc),
-                model_used=self.model,
+                model_used=self._model,
                 latency_ms=int((time.monotonic() - start_ts) * 1000),
             )
 
@@ -465,11 +456,11 @@ class ExecutorAgent(BaseAgent):
 
 
 class ReviewerAgent(BaseAgent):
-    """Проверяет результаты при risk_level=high. Не вызывает инструменты."""
+    """Проверяет результаты при risk_level=high."""
 
     name = "reviewer"
     allowed_tools: list[str] = []
-    model = MODEL_REVIEWER
+    role = "reviewer"
 
     @property
     def system_prompt(self) -> str:
@@ -526,7 +517,7 @@ class ReviewerAgent(BaseAgent):
                 success=True,
                 output={"review": review_data},
                 reasoning=reasoning,
-                model_used=self.model,
+                model_used=self._model,
                 latency_ms=int((time.monotonic() - start_ts) * 1000),
             )
 
@@ -537,7 +528,7 @@ class ReviewerAgent(BaseAgent):
                 success=False,
                 output={"review": {"approved": False, "explanation": str(exc)}},
                 error=str(exc),
-                model_used=self.model,
+                model_used=self._model,
                 latency_ms=int((time.monotonic() - start_ts) * 1000),
             )
 
@@ -546,11 +537,11 @@ class ReviewerAgent(BaseAgent):
 
 
 class ExplainerAgent(BaseAgent):
-    """Формирует финальный human-readable ответ на русском. Лёгкая модель."""
+    """Формирует финальный human-readable ответ на русском."""
 
     name = "explainer"
     allowed_tools: list[str] = []
-    model = MODEL_EXPLAINER
+    role = "explainer"
 
     @property
     def system_prompt(self) -> str:
@@ -596,21 +587,18 @@ class ExplainerAgent(BaseAgent):
                 success=True,
                 output={"final_response": final_text},
                 reasoning=final_text,
-                model_used=self.model,
+                model_used=self._model,
                 latency_ms=int((time.monotonic() - start_ts) * 1000),
             )
         except Exception as exc:
             logger.error("ExplainerAgent error: %s", exc, exc_info=True)
-            fallback = (
-                "Произошла ошибка при формировании ответа. "
-                "Попробуйте переформулировать запрос."
-            )
+            fallback = "Произошла ошибка при формировании ответа. Попробуйте переформулировать запрос."
             return AgentResult(
                 agent_name=self.name,
                 success=False,
                 output={"final_response": fallback},
                 error=str(exc),
-                model_used=self.model,
+                model_used=self._model,
                 latency_ms=int((time.monotonic() - start_ts) * 1000),
             )
 
@@ -627,15 +615,12 @@ class MultiAgentCoordinator:
     """
     Маршрутизирует запрос к нужному набору агентов.
 
-    Логика:
-        bypass_llm или простой read → прямой вызов MCP → Explainer
-        Средний read               → Researcher → Explainer
-        Средний write              → Researcher → Executor → Reviewer → Explainer
-        Сложный (≥3 шагов)        → Planner → [R|E]* → Reviewer → Explainer
+    Принимает llm_client вместо anthropic_client для поддержки Ollama.
     """
 
-    def __init__(self, mcp_client: Any, anthropic_client: anthropic.AsyncAnthropic) -> None:
-        args = (mcp_client, anthropic_client)
+    def __init__(self, mcp_client: Any, llm_client: LLMClient | None = None) -> None:
+        client = llm_client or get_llm_client()
+        args = (mcp_client, client)
         self._planner = PlannerAgent(*args)
         self._researcher = ResearcherAgent(*args)
         self._executor = ExecutorAgent(*args)
@@ -648,16 +633,7 @@ class MultiAgentCoordinator:
         nlu_result: Any,
         context: dict[str, Any],
     ) -> AgentResult:
-        """
-        Маршрутизирует запрос к агентам по сложности и намерению.
-
-        Args:
-            nlu_result: Результат NLU-анализа (NLUResult).
-            context:    Полный контекст запроса.
-
-        Returns:
-            Финальный AgentResult с ответом пользователю.
-        """
+        """Маршрутизирует запрос к агентам по сложности и намерению."""
         intent = nlu_result.intent
         confidence = nlu_result.confidence
         bypass_llm = nlu_result.bypass_llm
@@ -696,7 +672,6 @@ class MultiAgentCoordinator:
             return await self._route_read(agent_context)
 
     async def _route_simple(self, nlu_result: Any, context: dict[str, Any]) -> AgentResult:
-        """Прямой вызов MCP без LLM → Explainer."""
         if nlu_result.bypass_llm and nlu_result.required_tool:
             result = await self._mcp.call_tool(
                 nlu_result.required_tool, nlu_result.tool_args or {}
@@ -707,7 +682,6 @@ class MultiAgentCoordinator:
         return await self._explainer.run(context)
 
     async def _route_read(self, context: dict[str, Any]) -> AgentResult:
-        """Researcher → Explainer."""
         r = await self._researcher.run(context)
         context["research_results"] = r.output.get("research_results", "")
         if not r.success:
@@ -715,7 +689,6 @@ class MultiAgentCoordinator:
         return await self._explainer.run(context)
 
     async def _route_write(self, context: dict[str, Any]) -> AgentResult:
-        """Researcher → Executor → Reviewer → Explainer."""
         r = await self._researcher.run(context)
         context["research_results"] = r.output.get("research_results", "")
 
@@ -728,7 +701,6 @@ class MultiAgentCoordinator:
         return await self._explainer.run(context)
 
     async def _route_complex(self, context: dict[str, Any]) -> AgentResult:
-        """Planner → [Researcher|Executor]* → Reviewer → Explainer."""
         plan_result = await self._planner.run(context)
         if not plan_result.success:
             context["error_message"] = f"Планировщик: {plan_result.error}"
@@ -743,7 +715,6 @@ class MultiAgentCoordinator:
         _EXECUTOR_TOOLS = set(ExecutorAgent.allowed_tools)
 
         for step in plan.steps:
-            # Проверяем зависимости
             if step.depends_on and not all(
                 any(s.step == dep and s.executed and not s.failed for s in plan.steps)
                 for dep in step.depends_on

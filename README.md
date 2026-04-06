@@ -1,183 +1,77 @@
-# EDMS AI Assistant
+# EDMS AI Assistant — Руководство по запуску
 
-ИИ-ассистент для корпоративной системы электронного документооборота.
+| Файл                          | Назначение                                                         |
+|-------------------------------|--------------------------------------------------------------------|
+| `orchestrator/llm.py`         | Единый LLM-адаптер: Ollama + Anthropic                             |
+| `orchestrator/agent.py`       | Обновлён: использует `LLMClient` вместо `anthropic.AsyncAnthropic` |
+| `orchestrator/multi_agent.py` | Обновлён: агенты используют `LLMClient`, модели из `.env`          |
+| `start_all.sh`                | Единый скрипт запуска всех сервисов                                |
+| `docker-compose.yml`          | Обновлён: добавлен сервис Ollama, MODEL_* переменные               |
 
-## 1. Архитектура
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Chrome Extension / Web UI                     │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │ POST /chat
-                          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              Orchestrator  :8002  (FastAPI)                      │
-│                                                                   │
-│  EdmsDocumentAgent                                               │
-│  ├── Anthropic SDK (нативный tool_use)                          │
-│  ├── AsyncPostgresSaver  ← CHECKPOINT_DB_URL                    │
-│  ├── MCPClient (HTTP)    ← MCP_URL                              │
-│  └── SemanticDispatcher  (NLU, маршрутизация моделей)           │
-│                                                                   │
-│  ModelRouter:                                                    │
-│    haiku   → intent known + confidence>0.85 + readonly          │
-│    sonnet  → write ops, moderate complexity                      │
-│    opus    → planning, unknown intent, complex workflow          │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │ HTTP POST /call
-                          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              MCP Server  :8001  (FastMCP)                        │
-│                                                                   │
-│  @mcp.tool() декораторы — единственный правильный API:          │
-│  get_document · search_documents · create_document               │
-│  update_document_status · get_document_history                   │
-│  assign_document · get_analytics · get_workflow_status           │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │ HTTP
-                          ▼
-                   Java EDMS API (внешний)
+## Быстрый старт
 
-  PostgreSQL :5432    Redis :6379    Qdrant :6333
-  Prometheus :9090    Grafana :3000
-  Feedback   :8003
-```
-
-**Ключевые архитектурные решения:**
-
-- MCP-сервер использует `@mcp.tool()` (FastMCP) — **не** LangChain `@tool`
-- Агент работает через нативный Anthropic SDK (`tool_use`), **не** через LangGraph граф
-- История тредов хранится в PostgreSQL через `AsyncPostgresSaver` (персистентно)
-- Инструменты вызываются по HTTP из агента через `MCPClient`, не импортируются напрямую
-
-## 2. Быстрый старт
+### Вариант 1: Docker Compose (рекомендуется)
 
 ```bash
-# 1. Клонировать и настроить
-git clone https://github.com/your-org/edms-ai-assistant.git
-cd edms-ai-assistant
+# 1. Скопируйте конфиг
 cp .env.example .env
-# Заполнить обязательные поля: ANTHROPIC_API_KEY, POSTGRES_PASSWORD,
-# EDMS_API_URL, GRAFANA_ADMIN_PASSWORD
+# Отредактируйте .env — убедитесь что MODEL_NAME правильный
 
-# 2. Запустить
+# 2. Запустите всё
 docker compose up -d
 
-# 3. Проверить
+# 3. Проверьте статус
 docker compose ps
-curl http://localhost:8002/health
+curl http://localhost:8000/health
 ```
 
-## 3. Локальная разработка
+### Вариант 2: Локальный запуск (shell-скрипт)
 
 ```bash
-# Зависимости
-uv sync
+# Дайте права на выполнение
+chmod +x start_all.sh
 
-# Запустить инфраструктуру
-docker compose up -d postgres redis qdrant
+# Запустить все сервисы
+./start_all.sh
 
-# MCP-сервер
-cd mcp-server && python run_server.py &
+# Dev режим (hot-reload)
+./start_all.sh --dev
 
-# Миграции
-cd orchestrator && alembic upgrade head
+# Статус
+./start_all.sh --status
 
-# Оркестратор
-cd orchestrator && python main.py
+# Логи
+./start_all.sh --logs
+
+# Остановка
+./start_all.sh --stop
 ```
 
-## 4. Добавление нового MCP-инструмента
+---
 
-```python
-# mcp-server/edms_mcp_server.py
+## Маппинг агентов → модели
 
-@mcp.tool(description="Описание на русском что делает инструмент")
-async def my_new_tool(
-    document_id: str,
-    param: str | None = None,
-) -> dict[str, Any]:
-    """
-    Подробное описание аргументов.
+| Агент           | Роль         | Переменная .env    |
+|-----------------|--------------|--------------------|
+| PlannerAgent    | `planner`    | `MODEL_PLANNER`    |
+| ResearcherAgent | `researcher` | `MODEL_RESEARCHER` |
+| ExecutorAgent   | `executor`   | `MODEL_EXECUTOR`   |
+| ReviewerAgent   | `reviewer`   | `MODEL_REVIEWER`   |
+| ExplainerAgent  | `explainer`  | `MODEL_EXPLAINER`  |
 
-    Args:
-        document_id: UUID документа.
-        param:       Опциональный параметр.
-    """
-    ts = _log_call("my_new_tool", {"document_id": document_id})
+---
 
-    # Валидация
-    if not document_id:
-        return _err("INVALID_REQUEST", "document_id обязателен")
+## URL сервисов
 
-    # HTTP-запрос к EDMS
-    result = await _request(
-        "POST",
-        f"/documents/{document_id}/my-action",
-        json_body={"param": param},
-        tool_name="my_new_tool",
-    )
+| Сервис       | URL                             |
+|--------------|---------------------------------|
+| API          | http://localhost:8000           |
+| Swagger Docs | http://localhost:8000/docs      |
+| MCP Server   | http://localhost:8001           |
+| Feedback     | http://localhost:8002           |
+| Grafana      | http://localhost:3000           |
+| Prometheus   | http://localhost:9090           |
+| Qdrant       | http://localhost:6333/dashboard |
+| Ollama       | http://localhost:11434          |
 
-    _log_result("my_new_tool", ts, result["success"])
-    return result
-```
-
-FastMCP автоматически генерирует JSON Schema из аннотаций Python.
-Перезапусти `mcp-server`: `docker compose restart mcp-server`.
-
-## 5. Обновление RAG-индекса
-
-Автоматически каждый день в `RAG_UPDATE_HOUR:00 UTC`.
-
-Ручной запуск:
-```bash
-# Требует admin JWT
-curl -X POST http://localhost:8003/rag/trigger-update \
-  -H "Authorization: Bearer $ADMIN_JWT"
-```
-
-## 6. Мониторинг
-
-- Grafana: http://localhost:3000
-- Prometheus: http://localhost:9090
-- Метрики оркестратора: http://localhost:8002/metrics
-- Метрики feedback: http://localhost:8003/metrics
-
-## 7. Troubleshooting
-
-**`ImportError: No module named 'edms_ai_assistant'`**
-```bash
-cd orchestrator && pip install -e .
-```
-
-**MCP-сервер не отвечает**
-```bash
-docker compose logs mcp-server
-curl http://localhost:8001/health
-# Проверь EDMS_API_URL в .env
-```
-
-**`AsyncPostgresSaver` не инициализируется**
-```bash
-# Установить psycopg v3 (не psycopg2!)
-pip install "psycopg[binary]>=3.2.0" langgraph-checkpoint-postgres
-# Проверить CHECKPOINT_DB_URL или DATABASE_URL
-```
-
-**Alembic: таблицы уже существуют**
-```bash
-cd orchestrator
-alembic stamp head  # пометить текущее состояние как применённое
-```
-
-**LLM timeout**
-```bash
-# Уменьшить AGENT_MAX_ITERATIONS и AGENT_TIMEOUT в .env
-# Или переключиться на более быструю модель
-```
-
-**Redis недоступен**
-```bash
-redis-cli -h $REDIS_HOST ping
-docker compose restart redis
-```
