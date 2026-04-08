@@ -11,7 +11,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from edms_ai_assistant.llm_client import get_llm_client
-from mcp_server.models.appeal_fields import AppealFields
+from edms_ai_assistant.mcp_server.models.appeal_fields import AppealFields
 
 logger = logging.getLogger(__name__)
 

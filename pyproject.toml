@@ -10,7 +10,7 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "edms-ai-assistant"
+name = "ai-edms-assistant"
 version = "0.1.0"
 description = "AI-Powered EDMS Document Automation Assistant"
 readme = "README.md"

@@ -30,7 +30,6 @@ def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS edms")
 
     # ── summarization_cache ───────────────────────────────────────────────
-    # Перенесено из orchestrator/db/database.py — единственный источник истины
     op.create_table(
         "summarization_cache",
         sa.Column("id", sa.String(36), primary_key=True),
