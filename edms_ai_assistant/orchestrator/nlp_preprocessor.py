@@ -1,4 +1,4 @@
-# orchestrator/nlp_preprocessor.py
+# edms_ai_assistant\orchestrator/nlp_preprocessor.py
 """
 NLU-препроцессор для русскоязычных запросов EDMS.
 

@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from config import settings
+from edms_ai_assistant.config import settings
 
 logger = logging.getLogger(__name__)
 

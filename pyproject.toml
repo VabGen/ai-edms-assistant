@@ -9,9 +9,6 @@
 requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
-
-# ─── Project metadata (PEP 621) ───────────────────────────────────────────────
-
 [project]
 name = "edms-ai-assistant"
 version = "0.1.0"
@@ -30,8 +27,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-# ─── Runtime dependencies ─────────────────────────────────────────────────────
-
 dependencies = [
     # ── Core ────────────────────────────────────────────────────────────
     "fastapi>=0.115.0,<1.0.0",
@@ -41,8 +36,9 @@ dependencies = [
     "pydantic-settings>=2.7.0,<3.0.0",
     "python-multipart>=0.0.20,<1.0.0",
     "aiofiles>=24.0.0,<26.0.0",
-    # ── Anthropic / LangGraph ────────────────────────────────────────────
+    # ── LLM ──────────────────────────────────────────────────────────────
     "anthropic>=0.40.0,<1.0.0",
+    # ── LangGraph ────────────────────────────────────────────────────────
     "langchain>=0.3.0,<1.0.0",
     "langchain-community>=0.3.0,<1.0.0",
     "langchain-core>=0.3.0,<1.0.0",
@@ -50,7 +46,8 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0.0,<3.0.0",
     "langchain-ollama>=0.3.0,<1.0.0",
     "langchain-openai>=0.3.0,<1.0.0",
-    # ── MCP ─────────────────────────────────────────────────────────────
+    "psycopg[binary]>=3.2.0,<4.0.0",
+    # ── MCP ──────────────────────────────────────────────────────────────
     "fastmcp>=2.0.0,<3.0.0",
     # ── Database ─────────────────────────────────────────────────────────
     "sqlalchemy>=2.0.0,<3.0.0",
@@ -157,7 +154,7 @@ ignore = [
     "RUF002",
     "RUF003",
     "E501",
-    "B008", # FastAPI Depends()/Security() as default args — intentional pattern
+    "B008",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -214,5 +211,3 @@ ignore_errors = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-ra -q --tb=short"
-
-# uv add docx2txt

@@ -40,8 +40,8 @@ from starlette.middleware.cors import CORSMiddleware
 from edms_ai_assistant.orchestrator.agent import EdmsDocumentAgent
 from edms_ai_assistant.orchestrator.api.routes.cache import router as cache_router
 from edms_ai_assistant.orchestrator.api.routes.settings import router as settings_router
-from config import settings
-from edms_ai_assistant.orchestrator.db.database import init_db
+from edms_ai_assistant.config import settings
+# from edms_ai_assistant.orchestrator.db.database import init_db
 from edms_ai_assistant.orchestrator.model import (
     AssistantResponse,
     FileUploadResponse,
@@ -49,8 +49,8 @@ from edms_ai_assistant.orchestrator.model import (
     UserInput,
 )
 from edms_ai_assistant.orchestrator.security import extract_user_id_from_token
-from edms_ai_assistant.orchestrator.services.document_service import close_redis, init_redis
-from edms_ai_assistant.orchestrator.utils.regex_utils import UUID_RE
+from mcp_server.services.document_service import close_redis, init_redis
+from edms_ai_assistant.shared.utils import UUID_RE
 
 logging.basicConfig(
     level=settings.LOGGING_LEVEL,

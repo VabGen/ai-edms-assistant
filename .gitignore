@@ -6,8 +6,8 @@
 #*.key
 
 # Конфиги с секретами
-config/secrets.yaml
-config/*.secret
+#config/secrets.yaml
+#config/*.secret
 
 # Python
 __pycache__/

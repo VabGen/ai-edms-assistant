@@ -1,4 +1,4 @@
-# orchestrator/agent.py
+# edms_ai_assistant/orchestrator/agent.py
 """
 EDMS AI Assistant — главный агент.
 
@@ -22,8 +22,8 @@ from typing import Any
 
 import httpx
 
-from config import settings
-from edms_ai_assistant.mcp_server.llm import LLMClient, LLMResponse, get_llm_client
+from edms_ai_assistant.config import settings
+from edms_ai_assistant.llm_client import LLMClient, LLMResponse, get_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,8 @@ class MCPClient:
                 {
                     "name": t["name"],
                     "description": t.get("description", ""),
-                    "input_schema": t.get("inputSchema") or t.get("input_schema") or {"type": "object", "properties": {}},
+                    "input_schema": t.get("inputSchema") or t.get("input_schema") or {"type": "object",
+                                                                                      "properties": {}},
                 }
                 for t in raw_tools
                 if isinstance(t, dict) and t.get("name")
@@ -169,12 +170,12 @@ class MCPClient:
 
 
 def _build_system_prompt(
-    user_context: dict[str, Any],
-    context_ui_id: str | None,
-    file_path: str | None,
-    file_name: str | None,
-    human_choice: str | None,
-    user_token: str,
+        user_context: dict[str, Any],
+        context_ui_id: str | None,
+        file_path: str | None,
+        file_name: str | None,
+        human_choice: str | None,
+        user_token: str,
 ) -> str:
     parts: list[str] = [
         "Ты — ИИ-ассистент корпоративной системы электронного документооборота (EDMS).",
@@ -229,10 +230,10 @@ def _build_system_prompt(
 
 
 def _select_model_role(
-    intent: str,
-    confidence: float,
-    bypass_llm: bool,
-    is_write: bool,
+        intent: str,
+        confidence: float,
+        bypass_llm: bool,
+        is_write: bool,
 ) -> str:
     """
     Возвращает роль агента (planner/researcher/executor/explainer).
@@ -252,13 +253,13 @@ def _select_model_role(
 
 
 async def _run_react_loop(
-    llm_client: LLMClient,
-    mcp_client: MCPClient,
-    system_prompt: str,
-    user_message: str,
-    history: list[dict[str, Any]],
-    model_role: str,
-    max_iterations: int = _MAX_TOOL_ITERATIONS,
+        llm_client: LLMClient,
+        mcp_client: MCPClient,
+        system_prompt: str,
+        user_message: str,
+        history: list[dict[str, Any]],
+        model_role: str,
+        max_iterations: int = _MAX_TOOL_ITERATIONS,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     ReAct-цикл: reasoning → tool_use → tool_result → repeat → end_turn.
@@ -377,15 +378,15 @@ class EdmsDocumentAgent:
         logger.info("EdmsDocumentAgent closed")
 
     async def chat(
-        self,
-        message: str,
-        user_token: str,
-        context_ui_id: str | None = None,
-        thread_id: str | None = None,
-        user_context: dict[str, Any] | None = None,
-        file_path: str | None = None,
-        file_name: str | None = None,
-        human_choice: str | None = None,
+            self,
+            message: str,
+            user_token: str,
+            context_ui_id: str | None = None,
+            thread_id: str | None = None,
+            user_context: dict[str, Any] | None = None,
+            file_path: str | None = None,
+            file_name: str | None = None,
+            human_choice: str | None = None,
     ) -> dict[str, Any]:
         if not self._initialized:
             await self.initialize()
@@ -508,7 +509,7 @@ class EdmsDocumentAgent:
             return []
 
     async def _save_thread_history(
-        self, thread_id: str | None, messages: list[dict[str, Any]]
+            self, thread_id: str | None, messages: list[dict[str, Any]]
     ) -> None:
         if not thread_id or not messages:
             return
