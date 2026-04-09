@@ -1,4 +1,4 @@
-# edms_ai_assistant/feedback-collector/feedback_api.py
+# edms_ai_assistant/feedback_collector/feedback_api.py
 """
 Feedback Collector — FastAPI сервис для RLHF-loop.
 
@@ -13,12 +13,57 @@ APScheduler (ежедневно в RAG_UPDATE_HOUR UTC):
     1. Диалоги rating=1 → POST orchestrator /rag/add (successful_dialogs)
     2. Диалоги rating=-1 → Redis key="anti_examples_block" (текст антипримеров)
     3. Логирование статистики обновления
+
+ЗАПУСК:
+    # Рекомендуется (загружает .env автоматически через pydantic-settings):
+    python -m edms_ai_assistant.feedback_collector.feedback_api
+
+    # Или напрямую из корня проекта (python-dotenv подхватит .env):
+    python edms_ai_assistant/feedback_collector/feedback_api.py
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
+import sys
+from pathlib import Path
+
+# ── Добавляем корень проекта в sys.path (для запуска напрямую) ────────────────
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+# ── Загружаем .env ДО импорта settings ───────────────────────────────────────
+# pydantic-settings загружает .env автоматически при создании Settings(),
+# но только если файл существует рядом с CWD или в указанном env_file.
+# При запуске напрямую CWD может быть не корнём проекта — подгружаем явно.
+try:
+    from dotenv import load_dotenv  # type: ignore[import]
+    _env_file = _PROJECT_ROOT / ".env"
+    if _env_file.exists():
+        load_dotenv(_env_file, override=False)  # override=False: ENV > .env
+except ImportError:
+    pass  # python-dotenv опционален; pydantic-settings справится сам
+
+# ── Теперь можно безопасно импортировать settings ─────────────────────────────
+from edms_ai_assistant.config import settings  # noqa: E402
+
+# ── Конфигурация из settings (не из os.environ напрямую) ─────────────────────
+DATABASE_URL: str = settings.DATABASE_URL
+REDIS_URL: str = settings.REDIS_URL
+ORCHESTRATOR_URL: str = settings.ORCHESTRATOR_URL
+FEEDBACK_PORT: int = settings.FEEDBACK_PORT
+RAG_UPDATE_HOUR: int = settings.RAG_UPDATE_HOUR
+RAG_UPDATE_MINUTE: int = settings.RAG_UPDATE_MINUTE
+
+# ── Настройка логирования ─────────────────────────────────────────────────────
+logging.basicConfig(
+    level=settings.LOGGING_LEVEL,
+    format=settings.LOGGING_FORMAT,
+)
+logger = logging.getLogger(__name__)
+
+# ── Остальные импорты (после настройки sys.path и .env) ───────────────────────
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -29,7 +74,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, Float, Integer, String, Text, Boolean, func, select, update
+from sqlalchemy import (
+    Boolean, DateTime, Float, Integer, String, Text,
+    func, select, update,
+)
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -38,18 +86,8 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ["DATABASE_URL"]
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://orchestrator:8002")
-FEEDBACK_PORT = int(os.getenv("FEEDBACK_PORT", "8003"))
-RAG_UPDATE_HOUR = int(os.getenv("RAG_UPDATE_HOUR", "3"))
-RAG_UPDATE_MINUTE = int(os.getenv("RAG_UPDATE_MINUTE", "0"))
+# ── ORM ───────────────────────────────────────────────────────────────────────
 
 _engine = create_async_engine(DATABASE_URL, pool_pre_ping=True, pool_size=5)
 _Session: async_sessionmaker[AsyncSession] = async_sessionmaker(
@@ -57,9 +95,6 @@ _Session: async_sessionmaker[AsyncSession] = async_sessionmaker(
 )
 _redis: aioredis.Redis | None = None
 _scheduler = AsyncIOScheduler(timezone="UTC")
-
-
-# ── ORM ───────────────────────────────────────────────────────────────────
 
 
 class Base(DeclarativeBase):
@@ -96,7 +131,7 @@ class DialogLog(Base):
     feedback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-# ── Pydantic схемы ────────────────────────────────────────────────────────
+# ── Pydantic схемы ────────────────────────────────────────────────────────────
 
 
 class DialogCreate(BaseModel):
@@ -124,7 +159,7 @@ class FeedbackRequest(BaseModel):
     comment: str | None = Field(None, max_length=2000)
 
 
-# ── Lifespan ──────────────────────────────────────────────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 
 @asynccontextmanager
@@ -134,7 +169,7 @@ async def lifespan(_app: FastAPI):
     try:
         _redis = aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
         await _redis.ping()
-        logger.info("Redis connected")
+        logger.info("Redis connected: %s", REDIS_URL)
     except Exception as exc:
         logger.warning("Redis unavailable: %s", exc)
         _redis = None
@@ -167,7 +202,7 @@ app = FastAPI(
 )
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
 @app.post("/dialogs", status_code=201, summary="Сохранить диалог")
@@ -246,12 +281,14 @@ async def feedback_stats() -> dict:
             select(func.count(DialogLog.id)).where(DialogLog.bypass_llm.is_(True))
         )
 
+    pos = pos_r.scalar_one()
+    neg = neg_r.scalar_one()
     return {
         "total_dialogs": total,
         "rated_dialogs": rated,
-        "positive": pos_r.scalar_one(),
-        "negative": neg_r.scalar_one(),
-        "neutral": rated - pos_r.scalar_one() - neg_r.scalar_one(),
+        "positive": pos,
+        "negative": neg,
+        "neutral": rated - pos - neg,
         "rating_rate": round(rated / total, 3) if total else 0.0,
         "avg_latency_ms": round(avg_lat or 0, 1),
         "bypass_llm_count": bypass_r.scalar_one(),
@@ -279,17 +316,11 @@ async def metrics() -> dict:
     return {"status": "ok", "note": "Install prometheus_client for full metrics"}
 
 
-# ── RLHF Background Job ───────────────────────────────────────────────────
+# ── RLHF Background Job ───────────────────────────────────────────────────────
 
 
 async def _daily_rlhf_update() -> None:
-    """
-    Ежедневный RLHF-цикл.
-
-    1. Диалоги rating=1 за последние 24ч → POST к оркестратору /rag/add
-    2. Диалоги rating=-1 → сохранить блок антипримеров в Redis
-    3. Логировать статистику
-    """
+    """Ежедневный RLHF-цикл."""
     since = datetime.now(timezone.utc) - timedelta(hours=24)
     logger.info("RLHF daily update started (since %s)", since.isoformat())
 
@@ -297,7 +328,6 @@ async def _daily_rlhf_update() -> None:
     negative_count = 0
 
     async with _Session() as session:
-        # Позитивные диалоги → RAG
         pos_r = await session.execute(
             select(DialogLog).where(
                 DialogLog.user_feedback == 1,
@@ -306,7 +336,6 @@ async def _daily_rlhf_update() -> None:
         )
         positive_dialogs = list(pos_r.scalars().all())
 
-        # Негативные диалоги → anti_examples
         neg_r = await session.execute(
             select(DialogLog).where(
                 DialogLog.user_feedback == -1,
@@ -315,7 +344,6 @@ async def _daily_rlhf_update() -> None:
         )
         negative_dialogs = list(neg_r.scalars().all())
 
-    # Отправляем позитивные в RAG
     if positive_dialogs:
         async with httpx.AsyncClient(timeout=30.0) as client:
             for dialog in positive_dialogs:
@@ -337,7 +365,6 @@ async def _daily_rlhf_update() -> None:
                 except Exception as exc:
                     logger.warning("RAG add failed for dialog %s: %s", dialog.id, exc)
 
-    # Сохраняем негативные как антипримеры в Redis
     if negative_dialogs and _redis:
         lines = ["=== ЧЕГО НЕЛЬЗЯ ДЕЛАТЬ ==="]
         for i, d in enumerate(negative_dialogs[:20], 1):
@@ -361,5 +388,13 @@ async def _daily_rlhf_update() -> None:
 
 if __name__ == "__main__":
     import uvicorn
+
+    # Патч event loop для Windows
+    if sys.platform == "win32":
+        import asyncio
+        import selectors
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        loop = asyncio.SelectorEventLoop(selectors.SelectSelector())
+        asyncio.set_event_loop(loop)
 
     uvicorn.run(app, host="0.0.0.0", port=FEEDBACK_PORT, log_level="info")

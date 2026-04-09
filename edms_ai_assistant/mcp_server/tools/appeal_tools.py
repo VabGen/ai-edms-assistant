@@ -30,7 +30,7 @@ from edms_ai_assistant.mcp_server.clients.reference_client import ReferenceClien
 from edms_ai_assistant.mcp_server.services.appeal_extraction_service import (
     AppealExtractionService,
 )
-from edms_ai_assistant.shared.utils import CustomJSONEncoder, UUID_RE, extract_text_from_bytes
+from edms_ai_assistant.shared.utils.utils import CustomJSONEncoder, UUID_RE, extract_text_from_bytes
 
 logger = logging.getLogger(__name__)
 

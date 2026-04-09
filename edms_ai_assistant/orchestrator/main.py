@@ -53,7 +53,7 @@ from edms_ai_assistant.orchestrator.model import (
     UserInput,
 )
 from edms_ai_assistant.orchestrator.security import extract_user_id_from_token
-from edms_ai_assistant.shared.utils import UUID_RE, get_file_hash
+from edms_ai_assistant.shared.utils.utils import UUID_RE, get_file_hash
 
 logging.basicConfig(
     level=settings.LOGGING_LEVEL,

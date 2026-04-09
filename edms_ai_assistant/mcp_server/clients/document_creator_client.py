@@ -16,8 +16,8 @@ from typing import Any
 
 import httpx
 
-from edms_ai_assistant.clients.base_client import EdmsHttpClient
-from edms_ai_assistant.utils.api_utils import prepare_auth_headers
+from edms_ai_assistant.mcp_server.clients.base_client import EdmsHttpClient
+from edms_ai_assistant.shared.utils.utils import prepare_auth_headers
 
 logger = logging.getLogger(__name__)
 

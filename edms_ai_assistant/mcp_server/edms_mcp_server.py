@@ -1,22 +1,8 @@
-# edms_ai_assistant/mcp-server/edms_mcp_server.py
+# edms_ai_assistant/mcp_server/edms_mcp_server.py
 """
 EDMS MCP Server — FastMCP сервер со всеми инструментами.
 
-Архитектура (Вариант A):
-  Все инструменты из edms_ai_assistant зарегистрированы как @mcp.tool().
-  Оркестратор взаимодействует только через MCPClient — никаких прямых вызовов EDMS API.
-
-Группы инструментов:
-  document_tools  — doc_get_details, doc_get_versions, doc_compare_documents, doc_search_tool
-  content_tools   — doc_get_file_content, read_local_file_content,
-                    doc_compare_attachment_with_local, doc_summarize_text
-  workflow_tools  — task_create_tool, introduction_create_tool, employee_search_tool,
-                    doc_send_notification, doc_update_field
-  appeal_tools    — autofill_appeal_document, create_document_from_file
-
-  + 8 исходных инструментов (get_document, search_documents, create_document,
-    update_document_status, get_document_history, assign_document,
-    get_analytics, get_workflow_status)
+fastmcp >= 2.0: FastMCP(name, instructions=...) — параметр description убран.
 """
 from __future__ import annotations
 
@@ -35,10 +21,10 @@ from tenacity import (
 )
 
 from edms_ai_assistant.config import settings
-from .tools.document_tools import register_document_tools
-from .tools.content_tools import register_content_tools
-from .tools.workflow_tools import register_workflow_tools
-from .tools.appeal_tools import register_appeal_tools
+from edms_ai_assistant.mcp_server.tools.document_tools import register_document_tools
+from edms_ai_assistant.mcp_server.tools.content_tools import register_content_tools
+from edms_ai_assistant.mcp_server.tools.workflow_tools import register_workflow_tools
+from edms_ai_assistant.mcp_server.tools.appeal_tools import register_appeal_tools
 
 # ── Логирование ───────────────────────────────────────────────────────────
 
@@ -61,15 +47,25 @@ log = structlog.get_logger()
 logger = logging.getLogger(__name__)
 
 # ── FastMCP приложение ─────────────────────────────────────────────────────
+# fastmcp 2.x убрал параметр 'description', вместо него 'instructions'
+# fastmcp 1.x принимал 'description'
+# Определяем совместимый вызов через inspect:
 
-mcp = FastMCP(
-    name="EDMS Document Management",
-    version="3.0.0",
-    description=(
-        "Полный набор инструментов для работы с корпоративной СЭД: "
-        "документы, поручения, ознакомления, обращения граждан, файлы, аналитика."
-    ),
+import inspect as _inspect
+
+_fastmcp_init_params = set(_inspect.signature(FastMCP.__init__).parameters.keys())
+
+_mcp_kwargs: dict = {"name": "EDMS Document Management"}
+_mcp_description = (
+    "Полный набор инструментов для работы с корпоративной СЭД: "
+    "документы, поручения, ознакомления, обращения граждан, файлы, аналитика."
 )
+if "instructions" in _fastmcp_init_params:
+    _mcp_kwargs["instructions"] = _mcp_description  # fastmcp >= 2.0
+elif "description" in _fastmcp_init_params:
+    _mcp_kwargs["description"] = _mcp_description   # fastmcp < 2.0
+
+mcp = FastMCP(**_mcp_kwargs)
 
 # ── Регистрация всех групп инструментов ───────────────────────────────────
 
@@ -112,17 +108,7 @@ async def _request(
     json_body: dict | None = None,
     tool_name: str = "unknown",
 ) -> dict:
-    """
-    HTTP-запрос к EDMS API с retry.
-
-    Args:
-        method: HTTP-метод.
-        endpoint: Путь (без базового URL).
-        token: JWT-токен (если есть).
-        params: Query-параметры.
-        json_body: Тело запроса.
-        tool_name: Имя инструмента для логов.
-    """
+    """HTTP-запрос к EDMS API с retry."""
     url = f"{EDMS_API_URL}/{endpoint.lstrip('/')}"
     start_ts = time.monotonic()
     attempt_num = 0
@@ -192,7 +178,7 @@ async def _request(
     return _err("MAX_RETRIES", "Превышено количество попыток")
 
 
-# ── Исходные 8 инструментов (из tools_registry.json) ─────────────────────
+# ── 8 базовых инструментов ────────────────────────────────────────────────
 
 
 @mcp.tool(
@@ -207,25 +193,17 @@ async def get_document(
     include_history: bool = False,
     include_attachments: bool = True,
 ) -> dict:
-    """
-    Получить документ по ID.
-
-    Args:
-        document_id: UUID или номер DOC-12345.
-        token: JWT-токен.
-        include_history: Включить историю изменений.
-        include_attachments: Включить список вложений.
-    """
     if not document_id or not document_id.strip():
         return _err("INVALID_REQUEST", "document_id не может быть пустым")
-
     params: dict = {}
     if include_history:
         params["include_history"] = "true"
     if not include_attachments:
         params["include_attachments"] = "false"
-
-    return await _request("GET", f"/api/document/{document_id.strip()}", token=token, params=params, tool_name="get_document")
+    return await _request(
+        "GET", f"/api/document/{document_id.strip()}",
+        token=token, params=params, tool_name="get_document",
+    )
 
 
 @mcp.tool(
@@ -249,21 +227,12 @@ async def search_documents(
     sort_by: str = "updated_at",
     sort_order: str = "desc",
 ) -> dict:
-    """
-    Поиск документов.
-
-    Args:
-        token: JWT-токен.
-        query: Полнотекстовый поиск.
-        status: Список статусов: draft|review|approved|rejected|signed|archived.
-        document_type: Типы документов.
-        page: Страница (от 1).
-        page_size: Записей на странице (1–100).
-    """
     if not 1 <= page_size <= 100:
         return _err("INVALID_REQUEST", "page_size должен быть от 1 до 100")
-
-    params: dict = {"page": page, "page_size": page_size, "sort_by": sort_by, "sort_order": sort_order}
+    params: dict = {
+        "page": page, "page_size": page_size,
+        "sort_by": sort_by, "sort_order": sort_order,
+    }
     if query:
         params["q"] = query
     if status:
@@ -280,7 +249,6 @@ async def search_documents(
         params["date_from"] = date_from
     if date_to:
         params["date_to"] = date_to
-
     return await _request("GET", "/api/documents", token=token, params=params, tool_name="search_documents")
 
 
@@ -300,24 +268,11 @@ async def create_document(
     due_date: str | None = None,
     tags: list[str] | None = None,
 ) -> dict:
-    """
-    Создать новый документ в системе.
-
-    Args:
-        token: JWT-токен.
-        title: Название документа (3–500 символов).
-        document_type: договор|приказ|акт|счёт|протокол|спецификация.
-        content: Содержимое/описание.
-        assignees: UUID ответственных.
-        due_date: Срок исполнения ISO 8601.
-    """
     if not title or len(title.strip()) < 3:
         return _err("INVALID_REQUEST", "Название документа должно содержать минимум 3 символа")
-
     _VALID_TYPES = {"договор", "приказ", "акт", "счёт", "протокол", "спецификация"}
     if document_type not in _VALID_TYPES:
         return _err("INVALID_REQUEST", f"Тип должен быть одним из: {', '.join(sorted(_VALID_TYPES))}")
-
     body: dict = {"title": title.strip(), "type": document_type}
     if content:
         body["content"] = content
@@ -329,14 +284,12 @@ async def create_document(
         body["due_date"] = due_date
     if tags:
         body["tags"] = tags
-
     return await _request("POST", "/api/documents", token=token, json_body=body, tool_name="create_document")
 
 
 @mcp.tool(
     description=(
-        "Изменить статус документа. ВНИМАНИЕ: переход в rejected/archived необратим. "
-        "При деструктивных переходах требует комментарий."
+        "Изменить статус документа. ВНИМАНИЕ: переход в rejected/archived необратим."
     )
 )
 async def update_document_status(
@@ -346,39 +299,21 @@ async def update_document_status(
     comment: str | None = None,
     notify_assignees: bool = True,
 ) -> dict:
-    """
-    Изменить статус документа.
-
-    Args:
-        document_id: UUID документа.
-        token: JWT-токен.
-        new_status: draft|review|approved|rejected|signed|archived.
-        comment: Обязателен для rejected/archived.
-        notify_assignees: Уведомить ответственных.
-    """
     _VALID_STATUSES = {"draft", "review", "approved", "rejected", "signed", "archived"}
     if new_status not in _VALID_STATUSES:
         return _err("INVALID_REQUEST", f"Статус должен быть одним из: {', '.join(sorted(_VALID_STATUSES))}")
-
     if new_status in {"rejected", "archived"} and not comment:
         return _err("COMMENT_REQUIRED", f"Для статуса '{new_status}' необходим комментарий")
-
     body: dict = {"status": new_status, "notify_assignees": notify_assignees}
     if comment:
         body["comment"] = comment.strip()
-
     return await _request(
         "PATCH", f"/api/documents/{document_id}/status",
         token=token, json_body=body, tool_name="update_document_status",
     )
 
 
-@mcp.tool(
-    description=(
-        "История изменений документа: кто, когда и что менял. "
-        "Используй для аудита, восстановления хронологии."
-    )
-)
+@mcp.tool(description="История изменений документа: кто, когда и что менял.")
 async def get_document_history(
     document_id: str,
     token: str,
@@ -387,18 +322,8 @@ async def get_document_history(
     date_to: str | None = None,
     limit: int = 50,
 ) -> dict:
-    """
-    История событий документа.
-
-    Args:
-        document_id: UUID документа.
-        token: JWT-токен.
-        event_types: status_change|edit|comment|assignment|view|download.
-        limit: Максимум событий (1–500).
-    """
     if not 1 <= limit <= 500:
         return _err("INVALID_REQUEST", "limit должен быть от 1 до 500")
-
     params: dict = {"limit": limit}
     if event_types:
         params["event_types"] = ",".join(event_types)
@@ -406,19 +331,13 @@ async def get_document_history(
         params["date_from"] = date_from
     if date_to:
         params["date_to"] = date_to
-
     return await _request(
         "GET", f"/api/documents/{document_id}/history",
         token=token, params=params, tool_name="get_document_history",
     )
 
 
-@mcp.tool(
-    description=(
-        "Назначить ответственных за документ с ролями: "
-        "reviewer, approver, signer, observer."
-    )
-)
+@mcp.tool(description="Назначить ответственных за документ с ролями: reviewer, approver, signer, observer.")
 async def assign_document(
     document_id: str,
     token: str,
@@ -426,42 +345,24 @@ async def assign_document(
     replace_existing: bool = False,
     message: str | None = None,
 ) -> dict:
-    """
-    Назначить ответственных.
-
-    Args:
-        document_id: UUID документа.
-        token: JWT-токен.
-        assignees: [{user_id, role, due_date?}].
-        replace_existing: Заменить существующих.
-        message: Сообщение назначаемым.
-    """
     if not assignees:
         return _err("INVALID_REQUEST", "assignees не может быть пустым")
-
     _VALID_ROLES = {"reviewer", "approver", "signer", "observer"}
     for a in assignees:
         if not a.get("user_id"):
             return _err("INVALID_REQUEST", "Каждый assignee должен содержать user_id")
         if a.get("role") not in _VALID_ROLES:
             return _err("INVALID_REQUEST", f"Роль '{a.get('role')}' недопустима")
-
     body: dict = {"assignees": assignees, "replace_existing": replace_existing}
     if message:
         body["message"] = message[:1000]
-
     return await _request(
         "POST", f"/api/documents/{document_id}/assignees",
         token=token, json_body=body, tool_name="assign_document",
     )
 
 
-@mcp.tool(
-    description=(
-        "Аналитика документооборота: статистика, нагрузка, просрочки, "
-        "коэффициент одобрения."
-    )
-)
+@mcp.tool(description="Аналитика документооборота: статистика, нагрузка, просрочки, коэффициент одобрения.")
 async def get_analytics(
     token: str,
     metric_type: str,
@@ -471,22 +372,12 @@ async def get_analytics(
     department: str | None = None,
     document_type: str | None = None,
 ) -> dict:
-    """
-    Аналитика по документам.
-
-    Args:
-        token: JWT-токен.
-        metric_type: status_distribution|volume_by_type|processing_time|
-                     workload_by_user|workload_by_department|overdue_documents|approval_rate.
-        group_by: day|week|month|quarter.
-    """
     _VALID_METRICS = {
         "status_distribution", "volume_by_type", "processing_time",
         "workload_by_user", "workload_by_department", "overdue_documents", "approval_rate",
     }
     if metric_type not in _VALID_METRICS:
         return _err("INVALID_REQUEST", f"metric_type должен быть одним из: {', '.join(sorted(_VALID_METRICS))}")
-
     params: dict = {"metric": metric_type, "group_by": group_by}
     if date_from:
         params["date_from"] = date_from
@@ -496,33 +387,18 @@ async def get_analytics(
         params["department"] = department
     if document_type:
         params["type"] = document_type
-
     return await _request("GET", "/api/analytics", token=token, params=params, tool_name="get_analytics")
 
 
-@mcp.tool(
-    description=(
-        "Статус рабочего процесса: кто должен действовать, просрочки, прогресс. "
-        "Используй для 'где застрял документ', 'кто не согласовал'."
-    )
-)
+@mcp.tool(description="Статус рабочего процесса: кто должен действовать, просрочки, прогресс.")
 async def get_workflow_status(
     document_id: str,
     token: str,
     include_completed: bool = False,
 ) -> dict:
-    """
-    Статус рабочего процесса документа.
-
-    Args:
-        document_id: UUID документа.
-        token: JWT-токен.
-        include_completed: Включить завершённые шаги.
-    """
     params: dict = {}
     if include_completed:
         params["include_completed"] = "true"
-
     return await _request(
         "GET", f"/api/documents/{document_id}/workflow",
         token=token, params=params, tool_name="get_workflow_status",

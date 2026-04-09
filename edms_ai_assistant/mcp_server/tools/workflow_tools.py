@@ -28,7 +28,7 @@ from ..clients.employee_client import EmployeeClient
 from ..models.task_models import TaskType
 from ..services.introduction_service import IntroductionService
 from ..services.task_service import TaskService
-from edms_ai_assistant.shared.utils import CustomJSONEncoder
+from edms_ai_assistant.shared.utils.utils import CustomJSONEncoder
 
 logger = logging.getLogger(__name__)
 

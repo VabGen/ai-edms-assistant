@@ -73,6 +73,11 @@ class StateManager:
 
         При недоступности PostgreSQL или отсутствии пакета — переключается
         на MemorySaver без исключения.
+
+        Отдельно обрабатывает ошибку ProactorEventLoop на Windows:
+        при запуске через main_entrypoint.py event loop уже переключён,
+        поэтому ошибка не возникнет. При прямом запуске main.py на Windows
+        fallback на MemorySaver.
         """
         checkpoint_url = settings.CHECKPOINT_DB_URL or settings.DATABASE_URL
         try:
@@ -96,10 +101,20 @@ class StateManager:
                 "langgraph-checkpoint-postgres не установлен. Используется MemorySaver."
             )
             self._init_memory_fallback()
+
         except Exception as exc:
-            logger.warning(
-                "AsyncPostgresSaver init failed: %s. Используется MemorySaver.", exc
-            )
+            exc_str = str(exc)
+            # Специфичная обработка Windows ProactorEventLoop
+            if "ProactorEventLoop" in exc_str:
+                logger.warning(
+                    "Windows ProactorEventLoop несовместим с psycopg. "
+                    "Запустите через main_entrypoint.py для PostgreSQL checkpoint. "
+                    "Используется MemorySaver."
+                )
+            else:
+                logger.warning(
+                    "AsyncPostgresSaver init failed: %s. Используется MemorySaver.", exc
+                )
             self._init_memory_fallback()
 
     def _init_memory_fallback(self) -> None:

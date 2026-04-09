@@ -28,7 +28,7 @@ from fastmcp import FastMCP
 from edms_ai_assistant.mcp_server.clients.attachment_client import EdmsAttachmentClient
 from edms_ai_assistant.mcp_server.clients.document_client import DocumentClient
 from edms_ai_assistant.mcp_server.services.file_processor import FileProcessorService
-from edms_ai_assistant.shared.utils import UUID_RE
+from edms_ai_assistant.shared.utils.utils import UUID_RE
 
 logger = logging.getLogger(__name__)
 
