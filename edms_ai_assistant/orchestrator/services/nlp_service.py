@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from edms_ai_assistant.config import settings
-from edms_ai_assistant.utils.regex_utils import UUID_RE
+from edms_ai_assistant.shared.utils.utils import UUID_RE
 
 logger = logging.getLogger(__name__)
 

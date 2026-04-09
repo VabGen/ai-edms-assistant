@@ -4,12 +4,6 @@ EDMS AI Assistant — главный агент оркестратора.
 
 Использует LLMClient (llm_client.py) — поддерживает Ollama и Anthropic.
 Модели берутся из .env: MODEL_PLANNER, MODEL_EXECUTOR, MODEL_EXPLAINER и т.д.
-
-Архитектура:
-    EdmsDocumentAgent   — публичный класс, используется из main.py
-    _run_react_loop()   — ReAct-цикл через LLMClient
-    StateManager        — персистентное хранилище (AsyncPostgresSaver или MemorySaver)
-    MCPClient           — HTTP-клиент для MCP-сервера
 """
 from __future__ import annotations
 
@@ -60,7 +54,7 @@ class StateManager:
     """Персистентное хранилище истории диалогов.
 
     Primary:  AsyncPostgresSaver (LangGraph checkpoint-postgres)
-    Fallback: MemorySaver (in-memory, не персистентен между перезапусками)
+    Fallback: MemorySaver (in-memory)
     """
 
     def __init__(self) -> None:
@@ -69,16 +63,7 @@ class StateManager:
         self._postgres_available = False
 
     async def initialize(self) -> None:
-        """Инициализирует хранилище состояний.
-
-        При недоступности PostgreSQL или отсутствии пакета — переключается
-        на MemorySaver без исключения.
-
-        Отдельно обрабатывает ошибку ProactorEventLoop на Windows:
-        при запуске через main_entrypoint.py event loop уже переключён,
-        поэтому ошибка не возникнет. При прямом запуске main.py на Windows
-        fallback на MemorySaver.
-        """
+        """Инициализирует хранилище состояний."""
         checkpoint_url = settings.CHECKPOINT_DB_URL or settings.DATABASE_URL
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -104,7 +89,6 @@ class StateManager:
 
         except Exception as exc:
             exc_str = str(exc)
-            # Специфичная обработка Windows ProactorEventLoop
             if "ProactorEventLoop" in exc_str:
                 logger.warning(
                     "Windows ProactorEventLoop несовместим с psycopg. "
@@ -126,29 +110,15 @@ class StateManager:
         logger.warning("StateManager: используется MemorySaver (не персистентен)")
 
     def get_saver(self) -> Any:
-        """Возвращает checkpointer. Инициализирует fallback если не готов."""
         if self._saver is None:
             self._init_memory_fallback()
         return self._saver
 
     async def get_state(self, thread_id: str) -> Any:
-        """Возвращает текущий snapshot состояния для треда.
-
-        Метод нужен для /chat/history endpoint в main.py.
-
-        Args:
-            thread_id: Идентификатор треда диалога.
-
-        Returns:
-            Checkpoint snapshot с полем .values["messages"], или объект
-            с пустыми values если тред не найден.
-        """
-        from langchain_core.runnables import RunnableConfig
-
+        """Возвращает текущий snapshot состояния для треда."""
         saver = self.get_saver()
-        config = RunnableConfig(configurable={"thread_id": thread_id})
-
         try:
+            config = {"configurable": {"thread_id": thread_id}}
             if hasattr(saver, "aget"):
                 state = await saver.aget(config)
             elif hasattr(saver, "get"):
@@ -156,9 +126,7 @@ class StateManager:
                 state = await loop.run_in_executor(None, saver.get, config)
             else:
                 return _EmptyState()
-
             return state if state is not None else _EmptyState()
-
         except Exception as exc:
             logger.warning(
                 "StateManager.get_state failed for thread '%s': %s", thread_id, exc
@@ -166,7 +134,6 @@ class StateManager:
             return _EmptyState()
 
     async def close(self) -> None:
-        """Закрывает соединение с PostgreSQL если оно открыто."""
         if self._conn is not None:
             try:
                 await self._conn.close()
@@ -175,13 +142,10 @@ class StateManager:
 
     @property
     def is_persistent(self) -> bool:
-        """True если используется PostgreSQL (не MemorySaver)."""
         return self._postgres_available
 
 
 class _EmptyState:
-    """Заглушка состояния для отсутствующего треда."""
-
     values: dict[str, Any] = {}
     next: tuple[()] = ()
 
@@ -190,88 +154,233 @@ class _EmptyState:
 
 
 class MCPClient:
-    """HTTP-клиент для взаимодействия с MCP-сервером."""
+    """HTTP-клиент для взаимодействия с MCP-сервером.
+
+    fastmcp 2.x изменил эндпоинты:
+      - /tools     → не существует
+      - /mcp       → основной MCP эндпоинт (StreamableHTTP)
+      - Список инструментов получаем через MCP initialize/tools/list
+    """
 
     def __init__(self, mcp_url: str) -> None:
-        self._url = mcp_url.rstrip("/")
+        self._base_url = mcp_url.rstrip("/")
         self._tools_cache: list[dict[str, Any]] = []
 
     async def load_tools(self) -> list[dict[str, Any]]:
         """Загружает список инструментов из MCP-сервера.
 
-        Returns:
-            Список инструментов в формате Anthropic tool schema.
+        fastmcp 2.x: инструменты доступны через POST /mcp с MCP-протоколом
+        или через GET /mcp/tools (зависит от версии).
+        Пробуем несколько вариантов эндпоинтов.
         """
+        # Список эндпоинтов для попытки — от новых к старым
+        candidates = [
+            f"{self._base_url}/mcp",         # fastmcp 2.x StreamableHTTP
+            f"{self._base_url}/tools",        # старый формат / кастомный
+            f"{self._base_url}/",             # корневой
+        ]
+
+        # Сначала пробуем получить через MCP JSON-RPC протокол
+        tools = await self._load_via_mcp_protocol()
+        if tools:
+            self._tools_cache = tools
+            logger.info("MCPClient: загружено %d инструментов (MCP protocol)", len(tools))
+            return tools
+
+        # Fallback: пробуем REST-эндпоинты
+        for url in candidates:
+            tools = await self._try_rest_endpoint(url)
+            if tools is not None:
+                self._tools_cache = tools
+                logger.info(
+                    "MCPClient: загружено %d инструментов из %s", len(tools), url
+                )
+                return tools
+
+        logger.error(
+            "MCPClient: не удалось загрузить инструменты ни с одного эндпоинта"
+        )
+        return []
+
+    async def _load_via_mcp_protocol(self) -> list[dict[str, Any]] | None:
+        """Загружает инструменты через MCP JSON-RPC протокол (StreamableHTTP).
+
+        fastmcp 2.x использует StreamableHTTP транспорт.
+        Отправляем tools/list запрос.
+        """
+        mcp_endpoint = f"{self._base_url}/mcp"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{self._url}/tools")
-                resp.raise_for_status()
-                data = resp.json()
-
-            raw_tools = data.get("tools", data) if isinstance(data, dict) else data
-            anthropic_tools = [
-                {
-                    "name": t["name"],
-                    "description": t.get("description", ""),
-                    "input_schema": (
-                        t.get("inputSchema")
-                        or t.get("input_schema")
-                        or {"type": "object", "properties": {}}
-                    ),
+                # MCP initialize
+                init_payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "edms-orchestrator", "version": "1.0"},
+                    },
                 }
-                for t in raw_tools
-                if isinstance(t, dict) and t.get("name")
-            ]
-            self._tools_cache = anthropic_tools
-            logger.info(
-                "MCPClient: загружено %d инструментов из %s",
-                len(anthropic_tools),
-                self._url,
-            )
-            return anthropic_tools
+                resp = await client.post(
+                    mcp_endpoint,
+                    json=init_payload,
+                    headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                )
+                if resp.status_code not in (200, 201):
+                    return None
+
+                # MCP tools/list
+                list_payload = {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/list",
+                    "params": {},
+                }
+                resp2 = await client.post(
+                    mcp_endpoint,
+                    json=list_payload,
+                    headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                )
+                if resp2.status_code not in (200, 201):
+                    return None
+
+                # Ответ может быть SSE или plain JSON
+                content = resp2.text
+                data = _parse_mcp_response(content)
+                if data is None:
+                    return None
+
+                raw_tools = (
+                    data.get("result", {}).get("tools", [])
+                    if isinstance(data, dict)
+                    else []
+                )
+                return _normalize_tools(raw_tools)
+
         except Exception as exc:
-            logger.error("MCPClient: не удалось загрузить инструменты: %s", exc)
-            return []
+            logger.debug("MCP protocol load failed: %s", exc)
+            return None
+
+    async def _try_rest_endpoint(self, url: str) -> list[dict[str, Any]] | None:
+        """Пробует загрузить инструменты с REST-эндпоинта."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    return None
+                data = resp.json()
+            raw_tools = data.get("tools", data) if isinstance(data, dict) else data
+            if not isinstance(raw_tools, list):
+                return None
+            result = _normalize_tools(raw_tools)
+            return result if result else None
+        except Exception as exc:
+            logger.debug("REST endpoint %s failed: %s", url, exc)
+            return None
 
     async def call_tool(self, tool_name: str, tool_input: dict[str, Any]) -> Any:
-        """Вызывает инструмент MCP-сервера.
-
-        Args:
-            tool_name: Имя инструмента.
-            tool_input: Аргументы инструмента.
-
-        Returns:
-            Результат выполнения инструмента или dict с ошибкой.
-        """
+        """Вызывает инструмент MCP-сервера через JSON-RPC протокол."""
+        mcp_endpoint = f"{self._base_url}/mcp"
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": tool_input,
+            },
+        }
         try:
             async with httpx.AsyncClient(timeout=_MCP_CALL_TIMEOUT) as client:
                 resp = await client.post(
-                    f"{self._url}/call",
-                    json={"tool": tool_name, "args": tool_input},
-                    headers={"Content-Type": "application/json"},
+                    mcp_endpoint,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                    },
                 )
                 resp.raise_for_status()
-                return resp.json()
+                data = _parse_mcp_response(resp.text)
+                if data is None:
+                    return {"success": False, "error": "Empty response"}
+
+                # Извлекаем результат из MCP-ответа
+                if isinstance(data, dict):
+                    if "error" in data:
+                        return {
+                            "success": False,
+                            "error": data["error"].get("message", "MCP error"),
+                        }
+                    result = data.get("result", data)
+                    # MCP возвращает content как список блоков
+                    if isinstance(result, dict) and "content" in result:
+                        content_blocks = result["content"]
+                        if isinstance(content_blocks, list) and content_blocks:
+                            text = content_blocks[0].get("text", "")
+                            try:
+                                return _json.loads(text)
+                            except Exception:
+                                return {"success": True, "data": text}
+                    return result
+
+                return {"success": True, "data": data}
+
         except httpx.TimeoutException:
             logger.error("MCPClient: таймаут при вызове инструмента '%s'", tool_name)
             return {
                 "success": False,
-                "error": {
-                    "code": "TIMEOUT",
-                    "message": f"Tool '{tool_name}' timeout after {_MCP_CALL_TIMEOUT}s",
-                },
+                "error": {"code": "TIMEOUT", "message": f"Tool '{tool_name}' timeout"},
             }
         except Exception as exc:
             logger.error("MCPClient: ошибка вызова '%s': %s", tool_name, exc)
-            return {
-                "success": False,
-                "error": {"code": "CALL_ERROR", "message": str(exc)},
-            }
+            return {"success": False, "error": {"code": "CALL_ERROR", "message": str(exc)}}
 
     @property
     def cached_tools(self) -> list[dict[str, Any]]:
-        """Кэшированный список инструментов."""
         return self._tools_cache
+
+
+def _parse_mcp_response(text: str) -> Any:
+    """Парсит ответ MCP-сервера — может быть plain JSON или SSE."""
+    text = text.strip()
+    if not text:
+        return None
+    # SSE формат: строки начинаются с "data: "
+    if text.startswith("data:"):
+        for line in text.splitlines():
+            if line.startswith("data:"):
+                payload = line[5:].strip()
+                if payload and payload != "[DONE]":
+                    try:
+                        return _json.loads(payload)
+                    except Exception:
+                        continue
+        return None
+    # Plain JSON
+    try:
+        return _json.loads(text)
+    except Exception:
+        return None
+
+
+def _normalize_tools(raw_tools: list) -> list[dict[str, Any]]:
+    """Нормализует инструменты в формат Anthropic tool schema."""
+    result = []
+    for t in raw_tools:
+        if not isinstance(t, dict) or not t.get("name"):
+            continue
+        result.append({
+            "name": t["name"],
+            "description": t.get("description", ""),
+            "input_schema": (
+                t.get("inputSchema")
+                or t.get("input_schema")
+                or {"type": "object", "properties": {}}
+            ),
+        })
+    return result
 
 
 # ── Системный промпт ──────────────────────────────────────────────────────
@@ -285,19 +394,7 @@ def _build_system_prompt(
     human_choice: str | None,
     user_token: str,
 ) -> str:
-    """Собирает системный промпт для LLM из контекста запроса.
-
-    Args:
-        user_context: Профиль пользователя (firstName, lastName, role, department).
-        context_ui_id: UUID активного документа в UI EDMS.
-        file_path: UUID вложения EDMS или путь к локальному файлу.
-        file_name: Оригинальное имя загруженного файла.
-        human_choice: Явный выбор пользователя (тип суммаризации, UUID и т.п.).
-        user_token: JWT токен для передачи инструментам.
-
-    Returns:
-        Строка системного промпта.
-    """
+    """Собирает системный промпт для LLM из контекста запроса."""
     parts: list[str] = [
         "Ты — ИИ-ассистент корпоративной системы электронного документооборота (EDMS).",
         "Язык ответов: русский. Технические термины допустимы на английском.",
@@ -364,28 +461,11 @@ def _select_model_role(
     bypass_llm: bool,
     is_write: bool,
 ) -> str:
-    """Определяет роль агента для выбора LLM-модели.
-
-    Роль используется в LLMClient.model_for_role() для получения модели из .env.
-
-    Args:
-        intent: Определённое намерение пользователя.
-        confidence: Уверенность NLU в определении намерения (0.0–1.0).
-        bypass_llm: True если NLU уверен и можно обойти LLM.
-        is_write: True если операция изменяет данные.
-
-    Returns:
-        Строка-роль: "explainer" | "executor" | "planner".
-    """
+    """Определяет роль агента для выбора LLM-модели."""
     _SIMPLE_INTENTS = {
-        "get_document",
-        "get_history",
-        "get_workflow_status",
-        "get_analytics",
+        "get_document", "get_history", "get_workflow_status", "get_analytics",
     }
-    if bypass_llm or (
-        intent in _SIMPLE_INTENTS and confidence > 0.85 and not is_write
-    ):
+    if bypass_llm or (intent in _SIMPLE_INTENTS and confidence > 0.85 and not is_write):
         return "explainer"
     if is_write or intent in {"update_status", "assign_document", "search_documents"}:
         return "executor"
@@ -404,20 +484,7 @@ async def _run_react_loop(
     model_role: str,
     max_iterations: int = _MAX_TOOL_ITERATIONS,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """ReAct-цикл: reasoning → tool_use → tool_result → repeat → end_turn.
-
-    Args:
-        llm_client: Единый LLM-клиент (Ollama/Anthropic).
-        mcp_client: HTTP-клиент для MCP-сервера.
-        system_prompt: Системный промпт с контекстом пользователя.
-        user_message: Текущее сообщение пользователя.
-        history: История диалога в формате [{role, content}].
-        model_role: Роль агента для выбора модели.
-        max_iterations: Максимальное число итераций ReAct-цикла.
-
-    Returns:
-        Кортеж (финальный_текст, обновлённая_история).
-    """
+    """ReAct-цикл: reasoning → tool_use → tool_result → repeat → end_turn."""
     tools = mcp_client.cached_tools
     model_name = llm_client.model_for_role(model_role)
     messages = list(history) + [{"role": "user", "content": user_message}]
@@ -435,20 +502,17 @@ async def _run_react_loop(
             tools=tools if tools else None,
         )
 
-        # Строим assistant content для истории
         assistant_content: list[dict[str, Any]] = []
         for block in response.content:
             if block.type == "text" and block.text:
                 assistant_content.append({"type": "text", "text": block.text})
             elif block.type == "tool_use":
-                assistant_content.append(
-                    {
-                        "type": "tool_use",
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.input or {},
-                    }
-                )
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input or {},
+                })
 
         messages.append({"role": "assistant", "content": assistant_content})
 
@@ -464,29 +528,25 @@ async def _run_react_loop(
             )
             return text.strip() or "Готово.", messages
 
-        # Обрабатываем tool_use блоки
         tool_results: list[dict[str, Any]] = []
         for block in response.content:
             if block.type != "tool_use":
                 continue
-
             logger.info("Вызов MCP tool: %s args=%s", block.name, block.input)
             tool_result = await mcp_client.call_tool(block.name, block.input or {})
             result_content = _json.dumps(tool_result, ensure_ascii=False, default=str)
-            tool_results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result_content,
-                }
-            )
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result_content,
+            })
 
         if tool_results:
             messages.append({"role": "user", "content": tool_results})
         else:
             break
 
-    # Превышен лимит итераций — финальный ответ без инструментов
+    # Превышен лимит — финальный ответ
     logger.warning("ReAct loop достиг максимума итераций (%d)", max_iterations)
     final_response = await llm_client.create(
         model=model_name,
@@ -502,12 +562,7 @@ async def _run_react_loop(
 
 
 class EdmsDocumentAgent:
-    """Главный ИИ-агент EDMS AI Assistant.
-
-    Использует LLMClient для поддержки Ollama и Anthropic.
-    Модели выбираются из .env переменных MODEL_*.
-    Инструменты получаются от MCP-сервера по HTTP.
-    """
+    """Главный ИИ-агент EDMS AI Assistant."""
 
     def __init__(self) -> None:
         self.state_manager = StateManager()
@@ -534,7 +589,6 @@ class EdmsDocumentAgent:
         )
 
     async def close(self) -> None:
-        """Закрывает ресурсы агента при остановке приложения."""
         await self.state_manager.close()
         logger.info("EdmsDocumentAgent остановлен")
 
@@ -549,29 +603,13 @@ class EdmsDocumentAgent:
         file_name: str | None = None,
         human_choice: str | None = None,
     ) -> dict[str, Any]:
-        """Основная точка входа для диалога с агентом.
-
-        Args:
-            message: Сообщение пользователя.
-            user_token: JWT токен авторизации.
-            context_ui_id: UUID активного документа в UI EDMS.
-            thread_id: Идентификатор треда для сохранения истории.
-            user_context: Профиль пользователя (firstName, lastName, role и т.д.).
-            file_path: UUID вложения EDMS или путь к локальному файлу.
-            file_name: Оригинальное имя загруженного файла.
-            human_choice: Выбор пользователя при disambiguation или выборе формата.
-
-        Returns:
-            Dict с ключами: status, content, navigate_url, requires_reload, metadata.
-        """
+        """Основная точка входа для диалога с агентом."""
         if not self._initialized:
             await self.initialize()
 
         start_ts = time.monotonic()
         ctx = user_context or {}
 
-        # NLU — определяем намерение и сущности
-        # Импорт здесь чтобы избежать циклических зависимостей при старте
         from edms_ai_assistant.orchestrator.services.nlp_service import SemanticDispatcher
 
         dispatcher = SemanticDispatcher()
@@ -589,13 +627,8 @@ class EdmsDocumentAgent:
         model_role = _select_model_role(intent, confidence, bypass_llm, is_write)
 
         logger.info(
-            "Agent chat: thread=%s intent=%s confidence=%.2f "
-            "model_role=%s backend=%s",
-            thread_id,
-            intent,
-            round(confidence, 2),
-            model_role,
-            self._llm.backend,
+            "Agent chat: thread=%s intent=%s confidence=%.2f model_role=%s backend=%s",
+            thread_id, intent, round(confidence, 2), model_role, self._llm.backend,
         )
 
         history = await self._load_thread_history(thread_id)
@@ -662,21 +695,12 @@ class EdmsDocumentAgent:
     async def _load_thread_history(
         self, thread_id: str | None
     ) -> list[dict[str, Any]]:
-        """Загружает историю диалога из StateManager.
-
-        Args:
-            thread_id: Идентификатор треда.
-
-        Returns:
-            Список сообщений [{role: "user"|"assistant", content: str}].
-        """
+        """Загружает историю диалога из StateManager."""
         if not thread_id:
             return []
         try:
             saver = self.state_manager.get_saver()
-            from langchain_core.runnables import RunnableConfig
-
-            config = RunnableConfig(configurable={"thread_id": thread_id})
+            config = {"configurable": {"thread_id": thread_id}}
 
             if hasattr(saver, "aget"):
                 state = await saver.aget(config)
@@ -717,15 +741,24 @@ class EdmsDocumentAgent:
     ) -> None:
         """Сохраняет историю диалога в StateManager.
 
-        Args:
-            thread_id: Идентификатор треда.
-            messages: Обновлённая история сообщений.
+        Фикс 'checkpoint_ns': новые версии langgraph MemorySaver требуют
+        поле checkpoint_ns в конфиге. Используем прямое хранение в dict
+        вместо формата checkpoint для MemorySaver.
         """
         if not thread_id or not messages:
             return
+
+        saver = self.state_manager.get_saver()
+
+        # Для MemorySaver используем упрощённое хранение через внутренний storage
+        # вместо формата langgraph checkpoint (который меняется между версиями)
+        if not self.state_manager.is_persistent:
+            self._save_to_memory_saver(saver, thread_id, messages)
+            return
+
+        # Для AsyncPostgresSaver — полный формат checkpoint
         try:
             from langchain_core.messages import AIMessage, HumanMessage
-            from langchain_core.runnables import RunnableConfig
 
             lc_messages = []
             for msg in messages:
@@ -741,42 +774,95 @@ class EdmsDocumentAgent:
             if not lc_messages:
                 return
 
-            saver = self.state_manager.get_saver()
-            config = RunnableConfig(configurable={"thread_id": thread_id})
+            config = {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": "",   # обязательное поле в новых версиях
+                    "checkpoint_id": "",
+                }
+            }
             checkpoint = {
                 "v": 1,
                 "ts": str(time.time()),
+                "id": thread_id,
                 "channel_values": {"messages": lc_messages},
                 "channel_versions": {"messages": 1},
-                "versions_seen": {},
+                "versions_seen": {"__input__": {}, "__start__": {"__start__": 1}},
                 "pending_sends": [],
             }
-            metadata = {"source": "agent", "step": len(lc_messages)}
+            metadata = {"source": "agent", "step": len(lc_messages), "writes": {}}
 
             if hasattr(saver, "aput"):
                 await saver.aput(config, checkpoint, metadata, {})
             elif hasattr(saver, "put"):
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(
-                    None, saver.put, config, checkpoint, metadata, {}
-                )
+                await loop.run_in_executor(None, saver.put, config, checkpoint, metadata, {})
+
         except Exception as exc:
             logger.warning(
                 "Не удалось сохранить историю треда '%s': %s", thread_id, exc
             )
 
+    def _save_to_memory_saver(
+        self,
+        saver: Any,
+        thread_id: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """Сохраняет историю в MemorySaver через его внутренний storage.
+
+        MemorySaver хранит данные в self.storage (dict).
+        Мы записываем напрямую, минуя версионированный checkpoint-формат,
+        который несовместим между версиями langgraph.
+        """
+        try:
+            # MemorySaver.storage — это dict вида {thread_id: {ns: {cid: checkpoint}}}
+            storage = getattr(saver, "storage", None)
+            if storage is None:
+                return
+
+            from langchain_core.messages import AIMessage, HumanMessage
+
+            lc_messages = []
+            for msg in messages:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if not isinstance(content, str):
+                    continue
+                if role == "user":
+                    lc_messages.append(HumanMessage(content=content))
+                elif role == "assistant" and content:
+                    lc_messages.append(AIMessage(content=content))
+
+            if not lc_messages:
+                return
+
+            checkpoint_id = f"chk_{thread_id}"
+            checkpoint = {
+                "v": 1,
+                "ts": str(time.time()),
+                "id": checkpoint_id,
+                "channel_values": {"messages": lc_messages},
+                "channel_versions": {"messages": len(lc_messages)},
+                "versions_seen": {},
+                "pending_sends": [],
+            }
+
+            # Структура storage: {thread_id: {"": {checkpoint_id: (checkpoint, metadata, {})}}}
+            if thread_id not in storage:
+                storage[thread_id] = {}
+            if "" not in storage[thread_id]:
+                storage[thread_id][""] = {}
+            storage[thread_id][""][checkpoint_id] = (checkpoint, {"source": "agent"}, {})
+
+        except Exception as exc:
+            logger.debug("_save_to_memory_saver failed: %s", exc)
+
     @staticmethod
     def _extract_nav_meta(
         messages: list[dict[str, Any]],
     ) -> tuple[str | None, bool]:
-        """Извлекает navigate_url и requires_reload из результатов инструментов.
-
-        Args:
-            messages: Обновлённая история диалога.
-
-        Returns:
-            Кортеж (navigate_url или None, requires_reload bool).
-        """
+        """Извлекает navigate_url и requires_reload из результатов инструментов."""
         navigate_url: str | None = None
         requires_reload = False
 
@@ -805,7 +891,6 @@ class EdmsDocumentAgent:
         return navigate_url, requires_reload
 
     def health_check(self) -> dict[str, Any]:
-        """Возвращает статус компонентов агента для /health endpoint."""
         return {
             "initialized": self._initialized,
             "mcp_url": str(settings.MCP_URL),
