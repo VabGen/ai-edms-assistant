@@ -93,6 +93,7 @@ def _extract_docx_via_docx2txt(file_path: str) -> str:
 
 # ── Utility: DOC to DOCX conversion ─────────────────────────────────────
 
+
 def _convert_doc_to_docx(doc_path: str) -> str:
     """Convert legacy .doc (Word 97-2003) to modern .docx using LibreOffice.
 
@@ -131,8 +132,10 @@ def _convert_doc_to_docx(doc_path: str) -> str:
             [
                 soffice_cmd,
                 "--headless",
-                "--convert-to", "docx:MS Word 2007 XML",
-                "--outdir", str(out_dir),
+                "--convert-to",
+                "docx:MS Word 2007 XML",
+                "--outdir",
+                str(out_dir),
                 str(doc_path_obj),
             ],
             capture_output=True,
@@ -145,7 +148,8 @@ def _convert_doc_to_docx(doc_path: str) -> str:
         if converted_path.exists():
             logger.info(
                 "DOC converted to DOCX via LibreOffice: %s → %s",
-                doc_path, converted_path,
+                doc_path,
+                converted_path,
             )
             return str(converted_path)
         else:
@@ -161,7 +165,8 @@ def _convert_doc_to_docx(doc_path: str) -> str:
     except subprocess.CalledProcessError as e:
         logger.error(
             "LibreOffice conversion failed: %s (stderr: %s)",
-            e, e.stderr,
+            e,
+            e.stderr,
         )
         raise RuntimeError(f"Conversion failed: {e.stderr or e}")
 
@@ -313,24 +318,33 @@ class FileProcessorService:
                 Path(docx_path).unlink()
                 logger.debug("Removed temporary converted file: %s", docx_path)
             except Exception as cleanup_err:
-                logger.warning("Failed to remove temp file %s: %s", docx_path, cleanup_err)
+                logger.warning(
+                    "Failed to remove temp file %s: %s", docx_path, cleanup_err
+                )
 
             if text and len(text.strip()) > 10:
                 logger.info(
                     "DOC extracted via LibreOffice conversion → docx pipeline",
-                    extra={"original": file_path, "converted": docx_path, "chars": len(text)},
+                    extra={
+                        "original": file_path,
+                        "converted": docx_path,
+                        "chars": len(text),
+                    },
                 )
                 return text
 
         except RuntimeError as conv_err:
             logger.warning(
                 "LibreOffice conversion failed for '%s': %s",
-                file_path, conv_err,
+                file_path,
+                conv_err,
             )
         except Exception as e:
             logger.error(
                 "Unexpected error during DOC extraction for '%s': %s",
-                file_path, e, exc_info=True,
+                file_path,
+                e,
+                exc_info=True,
             )
 
         return (
@@ -478,7 +492,9 @@ class FileProcessorService:
             if ext == ".xlsx":
                 for sheet_name in wb.sheetnames:
                     sheet = wb[sheet_name]
-                    extracted_text.append(f"\n{'=' * 50}\nЛИСТ: {sheet_name}\n{'=' * 50}\n")
+                    extracted_text.append(
+                        f"\n{'=' * 50}\nЛИСТ: {sheet_name}\n{'=' * 50}\n"
+                    )
                     for row in sheet.iter_rows(values_only=True):
                         if any(cell is not None for cell in row):
                             row_text = " | ".join(
@@ -488,7 +504,9 @@ class FileProcessorService:
             else:
                 for sheet_idx in range(wb.nsheets):
                     sheet = wb.sheet_by_index(sheet_idx)
-                    extracted_text.append(f"\n{'=' * 50}\nЛИСТ: {sheet.name}\n{'=' * 50}\n")
+                    extracted_text.append(
+                        f"\n{'=' * 50}\nЛИСТ: {sheet.name}\n{'=' * 50}\n"
+                    )
                     for row_idx in range(sheet.nrows):
                         row = sheet.row_values(row_idx)
                         if any(cell for cell in row):
@@ -554,7 +572,7 @@ class FileProcessorService:
 
     @classmethod
     async def _extract_excel_tables(
-            cls, file_path: str, ext: str
+        cls, file_path: str, ext: str
     ) -> list[dict[str, Any]]:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(

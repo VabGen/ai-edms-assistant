@@ -1,13 +1,8 @@
 # edms_ai_assistant/db/database.py
 """
 SQLAlchemy async engine и модели для кэша суммаризаций.
-
-ВАЖНО: init_db() удалён — схема и таблицы создаются через Alembic миграцию 001_init.
-Этот модуль предоставляет только:
-  - AsyncSessionLocal  — фабрика сессий
-  - SummarizationCache — ORM-модель для кэша
-  - get_db()           — FastAPI dependency
 """
+
 from __future__ import annotations
 
 import logging
@@ -61,9 +56,7 @@ class SummarizationCache(Base):
     file_identifier: Mapped[str] = mapped_column(
         String(255), index=True, nullable=False
     )
-    summary_type: Mapped[str] = mapped_column(
-        String(50), index=True, nullable=False
-    )
+    summary_type: Mapped[str] = mapped_column(String(50), index=True, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

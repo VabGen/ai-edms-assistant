@@ -11,6 +11,7 @@
     # или через этот файл:
     python edms_ai_assistant/orchestrator/main_entrypoint.py
 """
+
 from __future__ import annotations
 
 import sys
@@ -36,9 +37,7 @@ def _patch_event_loop_windows() -> None:
     if isinstance(current, asyncio.WindowsSelectorEventLoopPolicy):
         return
 
-    asyncio.set_event_loop_policy(
-        asyncio.WindowsSelectorEventLoopPolicy()
-    )
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     # Пересоздаём loop с правильным selector
     loop = asyncio.SelectorEventLoop(selectors.SelectSelector())
@@ -49,6 +48,7 @@ def _patch_event_loop_windows() -> None:
 _patch_event_loop_windows()
 
 import uvicorn  # noqa: E402
+
 from edms_ai_assistant.config import settings  # noqa: E402
 
 if __name__ == "__main__":

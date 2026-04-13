@@ -1,5 +1,6 @@
 # edms_ai_assistant/mcp_server/tools/document_tools.py
 """Инструменты работы с документами для FastMCP."""
+
 from __future__ import annotations
 
 import logging
@@ -7,9 +8,10 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from edms_ai_assistant.config import settings
 from edms_ai_assistant.mcp_server.clients.document_client import (
-    DocumentClient,
     FULL_DOC_INCLUDES,
+    DocumentClient,
 )
 from edms_ai_assistant.mcp_server.services.document_enricher import DocumentEnricher
 
@@ -26,6 +28,8 @@ _METADATA_FIELDS: tuple[tuple[str, str], ...] = (
     ("author", "Автор"),
 )
 
+_MAX_DOC_CONTENT_CHARS = 8000
+
 
 def _clean(d: Any) -> Any:
     """Рекурсивно удаляет None, пустые списки и словари."""
@@ -34,6 +38,84 @@ def _clean(d: Any) -> Any:
     if isinstance(d, list):
         return [_clean(i) for i in d if i not in (None, [], {}, "")]
     return d
+
+
+def _truncate_doc_for_llm(doc: dict[str, Any]) -> dict[str, Any]:
+    """Обрезает документ до разумного размера для передачи в LLM.
+
+    Удаляет потенциально огромные поля (вложения с base64, длинные тексты),
+    оставляет только ключевые метаданные.
+    """
+    import json
+
+    if len(json.dumps(doc, ensure_ascii=False, default=str)) <= _MAX_DOC_CONTENT_CHARS:
+        return doc
+
+    key_fields = [
+        "id",
+        "regNumber",
+        "reservedRegNumber",
+        "regDate",
+        "status",
+        "prevStatus",
+        "shortSummary",
+        "summary",
+        "note",
+        "docCategoryConstant",
+        "correspondentName",
+        "outRegNumber",
+        "outRegDate",
+        "author",
+        "initiator",
+        "responsibleExecutor",
+        "whoSigned",
+        "controlFlag",
+        "daysExecution",
+        "createDate",
+        "profileName",
+        "documentType",
+        "registrationJournal",
+        "version",
+        "pages",
+        "countTask",
+        "completedTaskCount",
+        "introductionCount",
+        "contractNumber",
+        "contractDate",
+        "contractSum",
+    ]
+    slim = {k: doc[k] for k in key_fields if k in doc and doc[k] not in (None, [], {})}
+
+    attachments = doc.get("attachmentDocument") or []
+    if attachments:
+        slim["attachmentDocument"] = [
+            {
+                "id": str(a.get("id", "")),
+                "name": a.get("name", ""),
+                "size": a.get("size"),
+            }
+            for a in attachments[:10]
+        ]
+
+    # Добавляем краткий список поручений
+    tasks = doc.get("taskList") or []
+    if tasks:
+        slim["taskList"] = [
+            {
+                "taskNumber": t.get("taskNumber"),
+                "taskText": (t.get("taskText") or "")[:200],
+                "taskStatus": t.get("taskStatus"),
+                "planedDateEnd": t.get("planedDateEnd"),
+            }
+            for t in tasks[:5]
+        ]
+
+    logger.debug(
+        "Document truncated for LLM: %d → %d chars",
+        len(json.dumps(doc, ensure_ascii=False, default=str)),
+        len(json.dumps(slim, ensure_ascii=False, default=str)),
+    )
+    return slim
 
 
 def _att_name(attachment: Any) -> str:
@@ -47,9 +129,7 @@ def _att_name(attachment: Any) -> str:
     return ""
 
 
-def _compare_metadata(
-    doc1: dict, doc2: dict
-) -> dict[str, Any]:
+def _compare_metadata(doc1: dict, doc2: dict) -> dict[str, Any]:
     changes: dict[str, Any] = {}
     for field_key, field_label in _METADATA_FIELDS:
         v1 = doc1.get(field_key)
@@ -109,7 +189,8 @@ def register_document_tools(mcp: FastMCP) -> None:
             token: JWT-токен авторизации.
         """
         try:
-            enricher = DocumentEnricher()
+            # base_url берётся из settings — не нужен как аргумент
+            enricher = DocumentEnricher(base_url=settings.EDMS_BASE_URL)
             async with DocumentClient() as client:
                 raw = await client.get_document_metadata(
                     token=token,
@@ -124,7 +205,12 @@ def register_document_tools(mcp: FastMCP) -> None:
                 }
 
             enriched = await enricher.enrich(raw, token=token)
-            return {"status": "success", "document": _clean(enriched)}
+            cleaned = _clean(enriched)
+
+            # Обрезаем для LLM чтобы не получить 500 от Ollama
+            trimmed = _truncate_doc_for_llm(cleaned)
+
+            return {"status": "success", "document": trimmed}
 
         except Exception as exc:
             logger.error(
@@ -157,9 +243,7 @@ def register_document_tools(mcp: FastMCP) -> None:
         """
         try:
             async with DocumentClient() as client:
-                versions = await client.get_document_versions(
-                    token, document_id
-                )
+                versions = await client.get_document_versions(token, document_id)
 
             if not versions:
                 return {
@@ -168,9 +252,7 @@ def register_document_tools(mcp: FastMCP) -> None:
                     "message": "У документа только одна версия — сравнивать не с чем.",
                 }
 
-            sorted_versions = sorted(
-                versions, key=lambda v: v.get("version", 0)
-            )
+            sorted_versions = sorted(versions, key=lambda v: v.get("version", 0))
             total = len(sorted_versions)
             versions_info: list[dict[str, Any]] = []
             version_ids: dict[str, str] = {}
@@ -206,12 +288,8 @@ def register_document_tools(mcp: FastMCP) -> None:
                     from_id = version_ids[from_vnum]
                     to_id = version_ids[to_vnum]
                     try:
-                        doc_from = await client.get_document_metadata(
-                            token, from_id
-                        )
-                        doc_to = await client.get_document_metadata(
-                            token, to_id
-                        )
+                        doc_from = await client.get_document_metadata(token, from_id)
+                        doc_to = await client.get_document_metadata(token, to_id)
                         if not doc_from or not doc_to:
                             errors.append(
                                 f"Версия {from_vnum} или {to_vnum}: метаданные недоступны"
@@ -252,11 +330,7 @@ def register_document_tools(mcp: FastMCP) -> None:
                 "message": (
                     f"Документ имеет {total} версии. "
                     f"Выполнено {len(comparisons)} сравнений. "
-                    + (
-                        "Изменения обнаружены."
-                        if has_changes
-                        else "Версии идентичны."
-                    )
+                    + ("Изменения обнаружены." if has_changes else "Версии идентичны.")
                 ),
             }
 
@@ -286,12 +360,8 @@ def register_document_tools(mcp: FastMCP) -> None:
         """
         try:
             async with DocumentClient() as client:
-                doc1 = await client.get_document_metadata(
-                    token, document_id_1
-                )
-                doc2 = await client.get_document_metadata(
-                    token, document_id_2
-                )
+                doc1 = await client.get_document_metadata(token, document_id_1)
+                doc2 = await client.get_document_metadata(token, document_id_2)
 
             if not doc1 or not doc2:
                 return {
@@ -314,9 +384,7 @@ def register_document_tools(mcp: FastMCP) -> None:
             }
 
         except Exception as e:
-            logger.error(
-                "doc_compare_documents failed: %s", e, exc_info=True
-            )
+            logger.error("doc_compare_documents failed: %s", e, exc_info=True)
             return {"status": "error", "message": f"Ошибка сравнения: {e!s}"}
 
     @mcp.tool(
@@ -417,9 +485,7 @@ def register_document_tools(mcp: FastMCP) -> None:
                 {
                     "id": str(d.get("id", "")),
                     "reg_number": (
-                        d.get("regNumber")
-                        or d.get("reservedRegNumber")
-                        or "—"
+                        d.get("regNumber") or d.get("reservedRegNumber") or "—"
                     ),
                     "reg_date": str(d.get("regDate", ""))[:10],
                     "category": str(d.get("docCategoryConstant", "—")),

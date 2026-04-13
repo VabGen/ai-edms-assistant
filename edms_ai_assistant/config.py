@@ -2,6 +2,7 @@
 """
 Единственный источник конфигурации EDMS AI Assistant.
 """
+
 from __future__ import annotations
 
 import logging
@@ -205,6 +206,11 @@ class Settings(BaseSettings):
     @property
     def chancellor_next_base_url(self) -> str:
         """Алиас для EDMS_BASE_URL (совместимость)."""
+        return self.EDMS_BASE_URL
+
+    @property
+    def CHANCELLOR_NEXT_BASE_URL(self) -> str:
+        """Uppercase алиас для EDMS_BASE_URL (используется в base_client.py)."""
         return self.EDMS_BASE_URL
 
 

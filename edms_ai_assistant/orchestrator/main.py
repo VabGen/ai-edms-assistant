@@ -12,6 +12,7 @@ Endpoints:
     GET/PATCH/DELETE /api/settings — управление настройками
     GET/DELETE /api/cache        — управление кэшем суммаризаций
 """
+
 from __future__ import annotations
 
 import logging
@@ -223,9 +224,20 @@ async def chat_endpoint(
     )
 
     _FILE_OPERATION_KEYWORDS = (
-        "сравни", "сравнение", "сравн", "compare",
-        "отличи", "анализ", "проанализируй", "суммаризир",
-        "прочит", "содержим", "прочти", "что в файл", "читай", "изучи",
+        "сравни",
+        "сравнение",
+        "сравн",
+        "compare",
+        "отличи",
+        "анализ",
+        "проанализируй",
+        "суммаризир",
+        "прочит",
+        "содержим",
+        "прочти",
+        "что в файл",
+        "читай",
+        "изучи",
     )
     _is_file_operation = any(
         kw in (user_input.message or "").lower() for kw in _FILE_OPERATION_KEYWORDS
@@ -321,28 +333,37 @@ async def api_direct_summarize(
                     if attachments:
 
                         def _normalize(s: str) -> str:
-                            return re.sub(r"[^a-zA-Zа-яА-Я0-9]", "", s.lower()) if s else ""
+                            return (
+                                re.sub(r"[^a-zA-Zа-яА-Я0-9]", "", s.lower())
+                                if s
+                                else ""
+                            )
 
                         clean_input = _normalize(current_path)
                         if clean_input:
                             for att in attachments:
                                 att_name = (
-                                    att.get("name", "") if isinstance(att, dict)
+                                    att.get("name", "")
+                                    if isinstance(att, dict)
                                     else getattr(att, "name", "")
                                 ) or ""
                                 att_id = str(
-                                    att.get("id", "") if isinstance(att, dict)
+                                    att.get("id", "")
+                                    if isinstance(att, dict)
                                     else getattr(att, "id", "")
                                 )
                                 if clean_input in _normalize(att_name):
                                     file_identifier = att_id
-                                    logger.info("Кэш: совпадение по имени '%s'", att_name)
+                                    logger.info(
+                                        "Кэш: совпадение по имени '%s'", att_name
+                                    )
                                     break
 
                         if not file_identifier and attachments:
                             first = attachments[0]
                             file_identifier = str(
-                                first.get("id", "") if isinstance(first, dict)
+                                first.get("id", "")
+                                if isinstance(first, dict)
                                 else getattr(first, "id", "")
                             )
                             logger.info(
@@ -397,7 +418,9 @@ async def api_direct_summarize(
         instructions = f"Работай с вложением {current_path}. " if is_uuid else ""
         agent_msg = f"{instructions}Проанализируй этот файл и выдели {type_label}."
 
-        logger.info("Агент: запрос суммаризации '%s' для %s", summary_type, current_path)
+        logger.info(
+            "Агент: запрос суммаризации '%s' для %s", summary_type, current_path
+        )
 
         agent_result = await agent.chat(
             message=agent_msg,

@@ -21,34 +21,28 @@ APScheduler (ежедневно в RAG_UPDATE_HOUR UTC):
     # Или напрямую из корня проекта (python-dotenv подхватит .env):
     python edms_ai_assistant/feedback_collector/feedback_api.py
 """
+
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 
-# ── Добавляем корень проекта в sys.path (для запуска напрямую) ────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-# ── Загружаем .env ДО импорта settings ───────────────────────────────────────
-# pydantic-settings загружает .env автоматически при создании Settings(),
-# но только если файл существует рядом с CWD или в указанном env_file.
-# При запуске напрямую CWD может быть не корнём проекта — подгружаем явно.
 try:
     from dotenv import load_dotenv  # type: ignore[import]
+
     _env_file = _PROJECT_ROOT / ".env"
     if _env_file.exists():
-        load_dotenv(_env_file, override=False)  # override=False: ENV > .env
+        load_dotenv(_env_file, override=False)
 except ImportError:
-    pass  # python-dotenv опционален; pydantic-settings справится сам
+    pass
 
-# ── Теперь можно безопасно импортировать settings ─────────────────────────────
 from edms_ai_assistant.config import settings  # noqa: E402
 
-# ── Конфигурация из settings (не из os.environ напрямую) ─────────────────────
 DATABASE_URL: str = settings.DATABASE_URL
 REDIS_URL: str = settings.REDIS_URL
 ORCHESTRATOR_URL: str = settings.ORCHESTRATOR_URL
@@ -56,14 +50,12 @@ FEEDBACK_PORT: int = settings.FEEDBACK_PORT
 RAG_UPDATE_HOUR: int = settings.RAG_UPDATE_HOUR
 RAG_UPDATE_MINUTE: int = settings.RAG_UPDATE_MINUTE
 
-# ── Настройка логирования ─────────────────────────────────────────────────────
 logging.basicConfig(
     level=settings.LOGGING_LEVEL,
     format=settings.LOGGING_FORMAT,
 )
 logger = logging.getLogger(__name__)
 
-# ── Остальные импорты (после настройки sys.path и .env) ───────────────────────
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -75,17 +67,24 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import (
-    Boolean, DateTime, Float, Integer, String, Text,
-    func, select, update,
+    Boolean,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    Text,
+    func,
+    select,
+    update,
 )
-from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
 
 # ── ORM ───────────────────────────────────────────────────────────────────────
 
@@ -114,10 +113,16 @@ class DialogLog(Base):
     normalized_query: Mapped[str | None] = mapped_column(Text)
     intent: Mapped[str | None] = mapped_column(String(100), index=True)
     confidence: Mapped[float | None] = mapped_column(Float)
-    entities: Mapped[dict] = mapped_column(JSONB(astext_type=Text()), server_default="{}")
+    entities: Mapped[dict] = mapped_column(
+        JSONB(astext_type=Text()), server_default="{}"
+    )
     selected_tool: Mapped[str | None] = mapped_column(String(255))
-    tool_args: Mapped[dict] = mapped_column(JSONB(astext_type=Text()), server_default="{}")
-    tool_result: Mapped[dict] = mapped_column(JSONB(astext_type=Text()), server_default="{}")
+    tool_args: Mapped[dict] = mapped_column(
+        JSONB(astext_type=Text()), server_default="{}"
+    )
+    tool_result: Mapped[dict] = mapped_column(
+        JSONB(astext_type=Text()), server_default="{}"
+    )
     final_response: Mapped[str | None] = mapped_column(Text)
     model_used: Mapped[str | None] = mapped_column(String(100))
     tokens_used: Mapped[int] = mapped_column(Integer, server_default="0")
@@ -183,7 +188,8 @@ async def lifespan(_app: FastAPI):
     _scheduler.start()
     logger.info(
         "Feedback collector started — RLHF update scheduled at %02d:%02d UTC",
-        RAG_UPDATE_HOUR, RAG_UPDATE_MINUTE,
+        RAG_UPDATE_HOUR,
+        RAG_UPDATE_MINUTE,
     )
 
     yield
@@ -209,24 +215,28 @@ app = FastAPI(
 async def save_dialog(data: DialogCreate) -> dict:
     async with _Session() as session:
         async with session.begin():
-            stmt = pg_insert(DialogLog).values(
-                id=data.id,
-                user_id=data.user_id,
-                session_id=data.session_id,
-                user_query=data.user_query,
-                normalized_query=data.normalized_query,
-                intent=data.intent,
-                confidence=data.confidence,
-                entities=data.entities,
-                selected_tool=data.selected_tool,
-                tool_args=data.tool_args,
-                tool_result=data.tool_result,
-                final_response=data.final_response,
-                model_used=data.model_used,
-                tokens_used=data.tokens_used,
-                bypass_llm=data.bypass_llm,
-                latency_ms=data.latency_ms,
-            ).on_conflict_do_nothing(index_elements=["id"])
+            stmt = (
+                pg_insert(DialogLog)
+                .values(
+                    id=data.id,
+                    user_id=data.user_id,
+                    session_id=data.session_id,
+                    user_query=data.user_query,
+                    normalized_query=data.normalized_query,
+                    intent=data.intent,
+                    confidence=data.confidence,
+                    entities=data.entities,
+                    selected_tool=data.selected_tool,
+                    tool_args=data.tool_args,
+                    tool_result=data.tool_result,
+                    final_response=data.final_response,
+                    model_used=data.model_used,
+                    tokens_used=data.tokens_used,
+                    bypass_llm=data.bypass_llm,
+                    latency_ms=data.latency_ms,
+                )
+                .on_conflict_do_nothing(index_elements=["id"])
+            )
             await session.execute(stmt)
     return {"status": "saved", "dialog_id": data.id}
 
@@ -353,7 +363,8 @@ async def _daily_rlhf_update() -> None:
                         json={
                             "dialog_id": dialog.id,
                             "user_query": dialog.user_query,
-                            "normalized_query": dialog.normalized_query or dialog.user_query,
+                            "normalized_query": dialog.normalized_query
+                            or dialog.user_query,
                             "intent": dialog.intent or "unknown",
                             "tool_used": dialog.selected_tool or "",
                             "tool_args": dialog.tool_args or {},
@@ -382,17 +393,18 @@ async def _daily_rlhf_update() -> None:
 
     logger.info(
         "RLHF update completed: positive_added=%d negative_stored=%d",
-        positive_count, negative_count,
+        positive_count,
+        negative_count,
     )
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    # Патч event loop для Windows
     if sys.platform == "win32":
         import asyncio
         import selectors
+
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         loop = asyncio.SelectorEventLoop(selectors.SelectSelector())
         asyncio.set_event_loop(loop)

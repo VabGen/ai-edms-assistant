@@ -2,12 +2,11 @@
 """
 Alembic async environment для postgresql+asyncpg.
 
-DATABASE_URL берётся из переменных окружения — не хардкодится.
-
 Запуск:
     alembic upgrade head
     alembic revision --autogenerate -m "description"
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -15,24 +14,22 @@ import os
 from logging.config import fileConfig
 
 import sqlalchemy
-from sqlalchemy.ext.asyncio import async_engine_from_config
-from sqlalchemy import pool
-
 from alembic import context
+from sqlalchemy import pool
+from sqlalchemy.ext.asyncio import async_engine_from_config
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Импортируем все модели для autogenerate
 try:
     from edms_ai_assistant.db.database import Base
+
     target_metadata = Base.metadata
 except ImportError:
     target_metadata = None
 
-# DATABASE_URL из env
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql+asyncpg://edms:change-me@localhost:5432/edms_ai",

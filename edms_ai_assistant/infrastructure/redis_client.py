@@ -6,25 +6,8 @@
   - init_redis()   — инициализация при старте приложения (lifespan)
   - close_redis()  — закрытие при остановке приложения
   - get_redis()    — FastAPI dependency / прямой доступ к клиенту
-
-Использование в lifespan::
-
-    from edms_ai_assistant.infrastructure.redis_client import init_redis, close_redis
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        await init_redis()
-        yield
-        await close_redis()
-
-Использование как dependency::
-
-    from edms_ai_assistant.infrastructure.redis_client import get_redis
-    import redis.asyncio as aioredis
-
-    async def endpoint(redis: aioredis.Redis = Depends(get_redis)):
-        ...
 """
+
 from __future__ import annotations
 
 import logging

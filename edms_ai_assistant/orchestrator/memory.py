@@ -12,6 +12,7 @@ SQLAlchemy модели:
     ConversationLog  — id, user_id, session_id, role, content, tokens, timestamp
     ActionHistory    — id, user_id, action_type, entity_id, metadata(JSONB), timestamp
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,7 +22,17 @@ from datetime import datetime, timezone
 from typing import Any
 
 import redis.asyncio as aioredis
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func, select
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+    select,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -100,12 +111,16 @@ class ConversationLog(Base):
     content: Mapped[str] = mapped_column(Text)
     tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     tool_name: Mapped[str | None] = mapped_column(String(255))
-    tool_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB(astext_type=Text()))
+    tool_result: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(astext_type=Text())
+    )
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
 
-    user: Mapped[UserProfile] = relationship("UserProfile", back_populates="conversation_logs")
+    user: Mapped[UserProfile] = relationship(
+        "UserProfile", back_populates="conversation_logs"
+    )
 
 
 class ActionHistory(Base):
@@ -130,7 +145,9 @@ class ActionHistory(Base):
         DateTime(timezone=True), server_default=func.now(), index=True
     )
 
-    user: Mapped[UserProfile] = relationship("UserProfile", back_populates="action_history")
+    user: Mapped[UserProfile] = relationship(
+        "UserProfile", back_populates="action_history"
+    )
 
 
 # ── ShortTermMemory ───────────────────────────────────────────────────────
@@ -215,10 +232,7 @@ class ShortTermMemory:
 
     def get_messages_for_llm(self) -> list[dict[str, str]]:
         """Возвращает сообщения в формате Anthropic/OpenAI API."""
-        return [
-            {"role": m["role"], "content": m["content"]}
-            for m in self._messages
-        ]
+        return [{"role": m["role"], "content": m["content"]} for m in self._messages]
 
     def clear(self) -> None:
         """Очищает буфер."""
@@ -382,7 +396,10 @@ class LongTermMemory:
                     )
                     session.add(profile)
                 else:
-                    profile.preferences = {**(profile.preferences or {}), **preferences_update}
+                    profile.preferences = {
+                        **(profile.preferences or {}),
+                        **preferences_update,
+                    }
                     if display_name is not None:
                         profile.display_name = display_name
                     if email is not None:

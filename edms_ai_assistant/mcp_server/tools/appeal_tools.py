@@ -1,13 +1,8 @@
 # edms_ai_assistant/mcp_server/tools/appeal_tools.py
 """
 Инструменты для работы с обращениями граждан: автозаполнение и создание из файла.
-
-Переписано под монорепо:
-  - FastMCP @mcp.tool() вместо langchain_core @tool()
-  - llm_client.get_llm_response() вместо get_chat_model()
-  - Сырые dict вместо generated DocumentDto
-  - Все импорты из edms_ai_assistant.*
 """
+
 from __future__ import annotations
 
 import json
@@ -30,15 +25,26 @@ from edms_ai_assistant.mcp_server.clients.reference_client import ReferenceClien
 from edms_ai_assistant.mcp_server.services.appeal_extraction_service import (
     AppealExtractionService,
 )
-from edms_ai_assistant.shared.utils.utils import CustomJSONEncoder, UUID_RE, extract_text_from_bytes
+from edms_ai_assistant.shared.utils.utils import (
+    UUID_RE,
+    CustomJSONEncoder,
+    extract_text_from_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
 _AUTOFILL_SUPPORTED: frozenset[str] = frozenset({"APPEAL"})
 _VALID_CATEGORIES: frozenset[str] = frozenset(
     {
-        "APPEAL", "INCOMING", "OUTGOING", "INTERN", "CONTRACT",
-        "MEETING", "MEETING_QUESTION", "QUESTION", "CUSTOM",
+        "APPEAL",
+        "INCOMING",
+        "OUTGOING",
+        "INTERN",
+        "CONTRACT",
+        "MEETING",
+        "MEETING_QUESTION",
+        "QUESTION",
+        "CUSTOM",
     }
 )
 _CATEGORY_NAMES_RU: dict[str, str] = {
@@ -61,8 +67,17 @@ class ValueSanitizer:
     """Утилиты для очистки и валидации данных."""
 
     EMPTY_PLACEHOLDERS = {
-        "none", "null", "nil", "n/a", "na", "unknown",
-        "not specified", "no", "нет", "неизвестно", "н/д",
+        "none",
+        "null",
+        "nil",
+        "n/a",
+        "na",
+        "unknown",
+        "not specified",
+        "no",
+        "нет",
+        "неизвестно",
+        "н/д",
     }
 
     @classmethod
@@ -81,8 +96,11 @@ class ValueSanitizer:
             return None
         cleaned = (
             str(value)
-            .replace("\u201c", '"').replace("\u201d", '"')
-            .replace("\u201e", '"').replace("\u00ab", '"').replace("\u00bb", '"')
+            .replace("\u201c", '"')
+            .replace("\u201d", '"')
+            .replace("\u201e", '"')
+            .replace("\u00ab", '"')
+            .replace("\u00bb", '"')
             .strip()
         )
         return cleaned if cleaned else None
@@ -148,9 +166,7 @@ class AppealAutofillOrchestrator:
     MIN_TEXT_LENGTH = 50
     SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".txt", ".doc", ".rtf")
 
-    def __init__(
-        self, document_id: str, token: str, attachment_id: str | None
-    ) -> None:
+    def __init__(self, document_id: str, token: str, attachment_id: str | None) -> None:
         self.document_id = document_id
         self.token = token
         self.attachment_id = attachment_id
@@ -167,9 +183,7 @@ class AppealAutofillOrchestrator:
         if hasattr(category, "value"):
             category = category.value  # type: ignore[union-attr]
         if category != "APPEAL":
-            raise ValueError(
-                f"Документ должен быть категории APPEAL, а не {category}"
-            )
+            raise ValueError(f"Документ должен быть категории APPEAL, а не {category}")
 
         # Выбор вложения
         attachments = raw_doc.get("attachmentDocument") or []
@@ -177,8 +191,14 @@ class AppealAutofillOrchestrator:
             raise ValueError("В документе отсутствуют вложения")
 
         target = self._select_attachment(attachments)
-        att_id = str(target.get("id") if isinstance(target, dict) else getattr(target, "id", ""))
-        att_name = (target.get("name") if isinstance(target, dict) else getattr(target, "name", "")) or "attachment"
+        att_id = str(
+            target.get("id") if isinstance(target, dict) else getattr(target, "id", "")
+        )
+        att_name = (
+            target.get("name")
+            if isinstance(target, dict)
+            else getattr(target, "name", "")
+        ) or "attachment"
 
         # Извлечение текста
         async with EdmsAttachmentClient() as client:
@@ -212,8 +232,10 @@ class AppealAutofillOrchestrator:
         if self.attachment_id:
             target = next(
                 (
-                    a for a in attachments
-                    if str(a.get("id") if isinstance(a, dict) else getattr(a, "id", "")) == self.attachment_id
+                    a
+                    for a in attachments
+                    if str(a.get("id") if isinstance(a, dict) else getattr(a, "id", ""))
+                    == self.attachment_id
                 ),
                 None,
             )
@@ -228,10 +250,13 @@ class AppealAutofillOrchestrator:
         if not target:
             target = next(
                 (
-                    a for a in attachments
-                    if (a.get("name") if isinstance(a, dict) else getattr(a, "name", "")).lower().endswith(
-                        self.SUPPORTED_EXTENSIONS
+                    a
+                    for a in attachments
+                    if (
+                        a.get("name") if isinstance(a, dict) else getattr(a, "name", "")
                     )
+                    .lower()
+                    .endswith(self.SUPPORTED_EXTENSIONS)
                 ),
                 attachments[0],
             )
@@ -320,7 +345,9 @@ class AppealAutofillOrchestrator:
 
         # Страна
         country_name = (
-            d.get("countryAppealName") if not ValueSanitizer.is_empty(d.get("countryAppealName")) else fields.country
+            d.get("countryAppealName")
+            if not ValueSanitizer.is_empty(d.get("countryAppealName"))
+            else fields.country
         )
         if country_name:
             data = await ref_client.find_country_with_name(self.token, country_name)
@@ -330,7 +357,9 @@ class AppealAutofillOrchestrator:
 
         # Регион — только если явно указан
         region_name = (
-            d.get("regionName") if not ValueSanitizer.is_empty(d.get("regionName")) else fields.regionName
+            d.get("regionName")
+            if not ValueSanitizer.is_empty(d.get("regionName"))
+            else fields.regionName
         )
         if region_name:
             data = await ref_client.find_region_with_name(self.token, region_name)
@@ -340,7 +369,9 @@ class AppealAutofillOrchestrator:
 
         # Район — только если явно указан
         district_name = (
-            d.get("districtName") if not ValueSanitizer.is_empty(d.get("districtName")) else fields.districtName
+            d.get("districtName")
+            if not ValueSanitizer.is_empty(d.get("districtName"))
+            else fields.districtName
         )
         if district_name:
             data = await ref_client.find_district_with_name(self.token, district_name)
@@ -350,7 +381,9 @@ class AppealAutofillOrchestrator:
 
         # Город — с иерархией
         city_name = (
-            d.get("cityName") if not ValueSanitizer.is_empty(d.get("cityName")) else fields.cityName
+            d.get("cityName")
+            if not ValueSanitizer.is_empty(d.get("cityName"))
+            else fields.cityName
         )
         if city_name:
             data = await ref_client.find_city_with_hierarchy(self.token, city_name)
@@ -382,11 +415,17 @@ class AppealAutofillOrchestrator:
                 canonical = await ref_client._find_entity_with_name(
                     self.token, "correspondent", corr_name, "Корреспондент"
                 )
-                if canonical and _is_good_correspondent_match(corr_name, canonical["name"]):
+                if canonical and _is_good_correspondent_match(
+                    corr_name, canonical["name"]
+                ):
                     appeal_payload["correspondentAppealId"] = canonical["id"]
-                    appeal_payload["correspondentAppeal"] = ValueSanitizer.sanitize_string(corr_name)
+                    appeal_payload["correspondentAppeal"] = (
+                        ValueSanitizer.sanitize_string(corr_name)
+                    )
                 else:
-                    appeal_payload["correspondentAppeal"] = ValueSanitizer.sanitize_string(corr_name)
+                    appeal_payload["correspondentAppeal"] = (
+                        ValueSanitizer.sanitize_string(corr_name)
+                    )
                     appeal_payload["correspondentAppealId"] = None
             else:
                 appeal_payload["correspondentAppeal"] = None
@@ -400,7 +439,9 @@ class AppealAutofillOrchestrator:
                 declarant_type = raw_dt
         if not declarant_type:
             raw_dt = str(d.get("declarantType", "") or "").upper()
-            declarant_type = raw_dt if raw_dt in ("INDIVIDUAL", "ENTITY") else "INDIVIDUAL"
+            declarant_type = (
+                raw_dt if raw_dt in ("INDIVIDUAL", "ENTITY") else "INDIVIDUAL"
+            )
             if declarant_type == "INDIVIDUAL":
                 self.warnings.append("declarantType установлен INDIVIDUAL по умолчанию")
 
@@ -430,7 +471,9 @@ class AppealAutofillOrchestrator:
         # Дата документа корреспондента
         date_doc = d.get("dateDocCorrespondentOrg") or fields.dateDocCorrespondentOrg
         if date_doc:
-            appeal_payload["dateDocCorrespondentOrg"] = ValueSanitizer.fix_datetime_format(date_doc)
+            appeal_payload["dateDocCorrespondentOrg"] = (
+                ValueSanitizer.fix_datetime_format(date_doc)
+            )
 
         # Поля для юридического лица
         if declarant_type == "ENTITY":
@@ -439,10 +482,14 @@ class AppealAutofillOrchestrator:
                 corr_data = await ref_client._find_entity_with_name(
                     self.token, "correspondent", raw_org, "Организация"
                 )
-                if corr_data and _is_good_correspondent_match(raw_org, corr_data.get("name", "")):
+                if corr_data and _is_good_correspondent_match(
+                    raw_org, corr_data.get("name", "")
+                ):
                     appeal_payload["organizationName"] = corr_data["name"]
                 else:
-                    appeal_payload["organizationName"] = ValueSanitizer.sanitize_string(raw_org)
+                    appeal_payload["organizationName"] = ValueSanitizer.sanitize_string(
+                        raw_org
+                    )
             else:
                 appeal_payload["organizationName"] = None
             appeal_payload["signed"] = ValueSanitizer.sanitize_string(
@@ -471,17 +518,26 @@ class AppealAutofillOrchestrator:
         raw_receipt = d.get("receiptDate") or fields.receiptDate
         if raw_receipt:
             receipt_dt = raw_receipt if isinstance(raw_receipt, datetime) else None
-            if receipt_dt and abs((receipt_dt.date() - datetime.now(UTC).date()).days) <= 1:
+            if (
+                receipt_dt
+                and abs((receipt_dt.date() - datetime.now(UTC).date()).days) <= 1
+            ):
                 appeal_payload["receiptDate"] = None
             else:
-                appeal_payload["receiptDate"] = ValueSanitizer.fix_datetime_format(raw_receipt)
+                appeal_payload["receiptDate"] = ValueSanitizer.fix_datetime_format(
+                    raw_receipt
+                )
         else:
             appeal_payload["receiptDate"] = None
 
         # Текстовые поля
         for text_field in (
-            "fullAddress", "phone", "email", "index",
-            "indexDateCoverLetter", "reviewProgress",
+            "fullAddress",
+            "phone",
+            "email",
+            "index",
+            "indexDateCoverLetter",
+            "reviewProgress",
         ):
             db_val = d.get(text_field)
             llm_val = getattr(fields, text_field, None)
@@ -491,7 +547,9 @@ class AppealAutofillOrchestrator:
         # submissionForm
         submission_form = d.get("submissionForm")
         appeal_payload["submissionForm"] = (
-            submission_form if not ValueSanitizer.is_empty(submission_form) else "WRITTEN"
+            submission_form
+            if not ValueSanitizer.is_empty(submission_form)
+            else "WRITTEN"
         )
 
         # DB-only поля
@@ -501,10 +559,16 @@ class AppealAutofillOrchestrator:
                 appeal_payload[db_field] = str(val)
 
         # Фильтрация пустых (кроме обязательных)
-        _ALWAYS_INCLUDE = {"correspondentAppeal", "correspondentAppealId", "submissionForm"}
+        _ALWAYS_INCLUDE = {
+            "correspondentAppeal",
+            "correspondentAppealId",
+            "submissionForm",
+        }
         filtered_payload = {
-            k: v for k, v in appeal_payload.items()
-            if k in _ALWAYS_INCLUDE or (v is not None and not ValueSanitizer.is_empty(v))
+            k: v
+            for k, v in appeal_payload.items()
+            if k in _ALWAYS_INCLUDE
+            or (v is not None and not ValueSanitizer.is_empty(v))
         }
 
         if not filtered_payload.get("declarantType"):
@@ -531,7 +595,9 @@ class AppealAutofillOrchestrator:
             token=self.token,
             json=json_safe,
         )
-        logger.info("%s executed successfully for %s", operation_type, self.document_id[:8])
+        logger.info(
+            "%s executed successfully for %s", operation_type, self.document_id[:8]
+        )
 
 
 async def _generate_summary_variants(
@@ -559,7 +625,11 @@ async def _generate_summary_variants(
         variants = [v[:77] + "..." if len(v) > 80 else v for v in variants[:3]]
         if current_summary and current_summary not in variants:
             variants = [
-                (current_summary[:77] + "..." if len(current_summary) > 80 else current_summary)
+                (
+                    current_summary[:77] + "..."
+                    if len(current_summary) > 80
+                    else current_summary
+                )
             ] + variants[:2]
         return variants[:3]
     except Exception as exc:
@@ -604,9 +674,7 @@ def register_appeal_tools(mcp: FastMCP) -> None:
         )
 
         try:
-            orchestrator = AppealAutofillOrchestrator(
-                document_id, token, attachment_id
-            )
+            orchestrator = AppealAutofillOrchestrator(document_id, token, attachment_id)
             result = await orchestrator.execute()
             result_dict = result.to_dict()
             result_dict["requires_reload"] = True
@@ -695,7 +763,9 @@ def register_appeal_tools(mcp: FastMCP) -> None:
                     normalized_category = cat
                     break
 
-        category_ru = _CATEGORY_NAMES_RU.get(normalized_category, normalized_category.lower())
+        category_ru = _CATEGORY_NAMES_RU.get(
+            normalized_category, normalized_category.lower()
+        )
         effective_file_name = file_name or Path(cleaned).name
         warnings: list[str] = []
 
@@ -723,13 +793,14 @@ def register_appeal_tools(mcp: FastMCP) -> None:
                 }
 
             doc_data: dict[str, Any] = (
-                created.get("document") or created
-                if "document" in created
-                else created
+                created.get("document") or created if "document" in created else created
             )
             document_id = str(doc_data.get("id", ""))
             if not document_id:
-                return {"status": "error", "message": "Документ создан, но сервер не вернул UUID."}
+                return {
+                    "status": "error",
+                    "message": "Документ создан, но сервер не вернул UUID.",
+                }
 
             # Шаг 3: Загрузить вложение
             attachment = await creator.upload_attachment(
@@ -739,7 +810,9 @@ def register_appeal_tools(mcp: FastMCP) -> None:
                 file_name=effective_file_name,
             )
             if attachment is None:
-                warnings.append(f"Файл '{effective_file_name}' не найден — вложение не загружено.")
+                warnings.append(
+                    f"Файл '{effective_file_name}' не найден — вложение не загружено."
+                )
 
         # Шаг 4: Автозаполнение для APPEAL
         autofill_status = "skipped"
@@ -760,7 +833,9 @@ def register_appeal_tools(mcp: FastMCP) -> None:
         if autofill_status == "done":
             parts.append("📋 Карточка заполнена автоматически.")
         elif autofill_status == "failed":
-            parts.append("⚠️ Карточку не удалось заполнить — проверьте и заполните вручную.")
+            parts.append(
+                "⚠️ Карточку не удалось заполнить — проверьте и заполните вручную."
+            )
         parts.append("🔗 Открываю документ в системе...")
 
         return {

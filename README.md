@@ -1,4 +1,4 @@
-# EDMS AI Assistant — Архитектура монорепо
+# EDMS AI Assistant
 
 ## Запуск
 

@@ -3,8 +3,6 @@
 Инструменты рабочих процессов: поручения, ознакомления, сотрудники,
 уведомления, обновление полей.
 
-Переписано под монорепо: FastMCP вместо langchain @tool.
-
 Содержит:
   - task_create_tool          (из task.py)
   - introduction_create_tool  (из introduction.py)
@@ -12,6 +10,7 @@
   - doc_send_notification     (из doc_notification.py)
   - doc_update_field          (из doc_update_field.py)
 """
+
 from __future__ import annotations
 
 import json
@@ -22,13 +21,14 @@ from uuid import UUID
 
 from fastmcp import FastMCP
 
+from edms_ai_assistant.shared.utils.utils import CustomJSONEncoder
+
 from ..clients.base_client import EdmsHttpClient
 from ..clients.document_client import DocumentClient
 from ..clients.employee_client import EmployeeClient
 from ..models.task_models import TaskType
 from ..services.introduction_service import IntroductionService
 from ..services.task_service import TaskService
-from edms_ai_assistant.shared.utils.utils import CustomJSONEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,11 @@ def _format_employee_full(raw: dict[str, Any]) -> dict[str, Any]:
     """Полная карточка сотрудника."""
     post = raw.get("post") or {}
     dept = raw.get("department") or {}
-    parts = [raw.get("lastName", ""), raw.get("firstName", ""), raw.get("middleName") or ""]
+    parts = [
+        raw.get("lastName", ""),
+        raw.get("firstName", ""),
+        raw.get("middleName") or "",
+    ]
     full_name = " ".join(p for p in parts if p).strip()
     return {
         "основное": {
@@ -79,7 +83,11 @@ def _format_employee_brief(raw: dict[str, Any]) -> dict[str, Any]:
     """Краткая карточка сотрудника для выбора."""
     post = raw.get("post") or {}
     dept = raw.get("department") or {}
-    parts = [raw.get("lastName", ""), raw.get("firstName", ""), raw.get("middleName") or ""]
+    parts = [
+        raw.get("lastName", ""),
+        raw.get("firstName", ""),
+        raw.get("middleName") or "",
+    ]
     full_name = " ".join(p for p in parts if p).strip()
     return {
         "id": str(raw.get("id", "")),
@@ -103,7 +111,13 @@ async def _fetch_existing_main_fields(
         val = raw.get(field_name)
         if val is not None:
             result[field_name] = str(val)
-    for field_name in ("pages", "additionalPages", "exemplarCount", "note", "shortSummary"):
+    for field_name in (
+        "pages",
+        "additionalPages",
+        "exemplarCount",
+        "note",
+        "shortSummary",
+    ):
         val = raw.get(field_name)
         if val is not None:
             result[field_name] = val
@@ -127,22 +141,36 @@ async def _fetch_existing_appeal_fields(
     # Обязательные поля
     declarant = appeal.get("declarantType")
     if declarant:
-        result["declarantType"] = str(declarant.value if hasattr(declarant, "value") else declarant).upper()
+        result["declarantType"] = str(
+            declarant.value if hasattr(declarant, "value") else declarant
+        ).upper()
     else:
         result["declarantType"] = "INDIVIDUAL"
 
     sub_form = appeal.get("submissionForm")
     if sub_form:
-        result["submissionForm"] = str(sub_form.value if hasattr(sub_form, "value") else sub_form)
+        result["submissionForm"] = str(
+            sub_form.value if hasattr(sub_form, "value") else sub_form
+        )
     else:
         result["submissionForm"] = "WRITTEN"
 
     # Сохраняем текущие строковые значения
     for attr in (
-        "fioApplicant", "organizationName", "fullAddress", "phone", "email",
-        "signed", "correspondentOrgNumber", "reviewProgress",
-        "countryAppealName", "regionName", "districtName", "cityName",
-        "index", "indexDateCoverLetter",
+        "fioApplicant",
+        "organizationName",
+        "fullAddress",
+        "phone",
+        "email",
+        "signed",
+        "correspondentOrgNumber",
+        "reviewProgress",
+        "countryAppealName",
+        "regionName",
+        "districtName",
+        "cityName",
+        "index",
+        "indexDateCoverLetter",
     ):
         val = appeal.get(attr)
         if val is not None and str(val).strip():
@@ -156,8 +184,14 @@ async def _fetch_existing_appeal_fields(
 
     # UUID поля
     for attr in (
-        "citizenTypeId", "subjectId", "countryAppealId", "cityId",
-        "districtId", "regionId", "correspondentAppealId", "solutionResultId",
+        "citizenTypeId",
+        "subjectId",
+        "countryAppealId",
+        "cityId",
+        "districtId",
+        "regionId",
+        "correspondentAppealId",
+        "solutionResultId",
     ):
         val = appeal.get(attr)
         if val is not None:
@@ -167,7 +201,9 @@ async def _fetch_existing_appeal_fields(
     for attr in ("receiptDate", "dateDocCorrespondentOrg"):
         val = appeal.get(attr)
         if val is not None:
-            result[attr] = str(val) if not hasattr(val, "isoformat") else val.isoformat()
+            result[attr] = (
+                str(val) if not hasattr(val, "isoformat") else val.isoformat()
+            )
 
     return result
 
@@ -221,12 +257,17 @@ def register_workflow_tools(mcp: FastMCP) -> None:
             }
 
         if not task_text or not task_text.strip():
-            return {"status": "error", "message": "Текст поручения не может быть пустым."}
+            return {
+                "status": "error",
+                "message": "Текст поручения не может быть пустым.",
+            }
 
         deadline: datetime | None = None
         if planed_date_end:
             try:
-                deadline = datetime.fromisoformat(planed_date_end.replace("Z", "+00:00"))
+                deadline = datetime.fromisoformat(
+                    planed_date_end.replace("Z", "+00:00")
+                )
                 if deadline.tzinfo is None:
                     deadline = deadline.replace(tzinfo=UTC)
             except ValueError as e:
@@ -289,7 +330,9 @@ def register_workflow_tools(mcp: FastMCP) -> None:
                     }
                     if result.not_found_employees:
                         response["not_found"] = result.not_found_employees
-                        response["message"] += f" Не найдено: {', '.join(result.not_found_employees)}."
+                        response[
+                            "message"
+                        ] += f" Не найдено: {', '.join(result.not_found_employees)}."
                     return response
 
                 return {"status": "error", "message": result.error_message}
@@ -401,7 +444,9 @@ def register_workflow_tools(mcp: FastMCP) -> None:
                     }
                     if resolution_result.not_found:
                         response["not_found"] = resolution_result.not_found
-                        response["message"] += f" Не найдены: {', '.join(resolution_result.not_found)}."
+                        response[
+                            "message"
+                        ] += f" Не найдены: {', '.join(resolution_result.not_found)}."
                     return response
 
                 return {"status": "error", "message": result.error_message}
@@ -446,9 +491,24 @@ def register_workflow_tools(mcp: FastMCP) -> None:
             department_ids: UUID отделов.
             employee_ids: Список UUID для пакетного запроса.
         """
-        if not any([employee_id, last_name, first_name, middle_name, full_post_name,
-                    active_only, fired_only, department_names, department_ids, employee_ids]):
-            return {"status": "error", "message": "Укажите хотя бы один параметр поиска."}
+        if not any(
+            [
+                employee_id,
+                last_name,
+                first_name,
+                middle_name,
+                full_post_name,
+                active_only,
+                fired_only,
+                department_names,
+                department_ids,
+                employee_ids,
+            ]
+        ):
+            return {
+                "status": "error",
+                "message": "Укажите хотя бы один параметр поиска.",
+            }
 
         # Прямой запрос по UUID
         if employee_id:
@@ -456,8 +516,15 @@ def register_workflow_tools(mcp: FastMCP) -> None:
                 async with EmployeeClient() as client:
                     raw = await client.get_employee(token, employee_id)
                 if not raw:
-                    return {"status": "not_found", "message": f"Сотрудник {employee_id} не найден."}
-                return {"status": "found", "total": 1, "employee_card": _format_employee_full(raw)}
+                    return {
+                        "status": "not_found",
+                        "message": f"Сотрудник {employee_id} не найден.",
+                    }
+                return {
+                    "status": "found",
+                    "total": 1,
+                    "employee_card": _format_employee_full(raw),
+                }
             except Exception as exc:
                 return {"status": "error", "message": f"Ошибка: {exc}"}
 
@@ -480,6 +547,7 @@ def register_workflow_tools(mcp: FastMCP) -> None:
         resolved_dept_ids: list[str] = list(department_ids or [])
         if department_names:
             from ..clients.department_client import DepartmentClient
+
             async with DepartmentClient() as dept_client:
                 for name in department_names:
                     dept = await dept_client.find_by_name(token, name.strip())
@@ -500,10 +568,19 @@ def register_workflow_tools(mcp: FastMCP) -> None:
                 )
 
             if not results:
-                return {"status": "not_found", "message": "Сотрудники не найдены.", "employees": [], "total": 0}
+                return {
+                    "status": "not_found",
+                    "message": "Сотрудники не найдены.",
+                    "employees": [],
+                    "total": 0,
+                }
 
             if len(results) == 1:
-                return {"status": "found", "total": 1, "employee_card": _format_employee_full(results[0])}
+                return {
+                    "status": "found",
+                    "total": 1,
+                    "employee_card": _format_employee_full(results[0]),
+                }
 
             choices = [_format_employee_brief(r) for r in results[:20]]
             return {
@@ -545,9 +622,15 @@ def register_workflow_tools(mcp: FastMCP) -> None:
             deadline: Дедлайн ISO 8601 (опционально).
         """
         if not recipient_ids:
-            return {"status": "error", "message": "Список получателей не может быть пустым."}
+            return {
+                "status": "error",
+                "message": "Список получателей не может быть пустым.",
+            }
         if not message or not message.strip():
-            return {"status": "error", "message": "Текст уведомления не может быть пустым."}
+            return {
+                "status": "error",
+                "message": "Текст уведомления не может быть пустым.",
+            }
 
         payload: dict[str, Any] = {
             "recipientIds": [uid.strip() for uid in recipient_ids if uid.strip()],

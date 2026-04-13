@@ -45,7 +45,7 @@ EDMS AI Assistant — Employee HTTP Client.
 from __future__ import annotations
 
 import logging
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Any
 
 from .base_client import EdmsBaseClient, EdmsHttpClient
@@ -65,7 +65,7 @@ _DEFAULT_INCLUDES: list[str] = ["POST", "DEPARTMENT"]
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class BaseEmployeeClient(EdmsBaseClient):
+class BaseEmployeeClient(EdmsBaseClient, ABC):
     """Abstract interface for EDMS Employee API clients.
 
     Определяет контракт для всех read/write методов EmployeeController.java,

@@ -2,15 +2,13 @@
 """
 Инструменты работы с содержимым файлов и вложений.
 
-Переписано под монорепо: FastMCP вместо langchain, llm_client вместо get_chat_model,
-сырые dict вместо generated DTO.
-
 Содержит:
   - doc_get_file_content      (из attachment.py)
   - read_local_file_content   (из local_file_tool.py)
   - doc_compare_attachment_with_local (из file_compare_tool.py)
   - doc_summarize_text        (из summarization.py)
 """
+
 from __future__ import annotations
 
 import difflib
@@ -41,25 +39,42 @@ _SUPPORTED_TEXT_EXTENSIONS: frozenset[str] = frozenset(
     {".pdf", ".docx", ".doc", ".txt", ".rtf", ".odt", ".md"}
 )
 _SUPPORTED_TABLE_EXTENSIONS: frozenset[str] = frozenset({".xlsx", ".xls", ".csv"})
-_ALL_SUPPORTED: frozenset[str] = _SUPPORTED_TEXT_EXTENSIONS | _SUPPORTED_TABLE_EXTENSIONS
+_ALL_SUPPORTED: frozenset[str] = (
+    _SUPPORTED_TEXT_EXTENSIONS | _SUPPORTED_TABLE_EXTENSIONS
+)
 
 _PATH_PLACEHOLDERS: frozenset[str] = frozenset(
-    {"", "local_file", "local_file_path", "/path/to/file",
-     "none", "null", "<local_file_path>", "<path>"}
+    {
+        "",
+        "local_file",
+        "local_file_path",
+        "/path/to/file",
+        "none",
+        "null",
+        "<local_file_path>",
+        "<path>",
+    }
 )
 
 _SUMMARY_TYPE_ALIASES: dict[str, str] = {
-    "факты": "extractive", "ключевые факты": "extractive",
-    "extractive": "extractive", "1": "extractive",
-    "пересказ": "abstractive", "краткий пересказ": "abstractive",
-    "abstractive": "abstractive", "2": "abstractive",
-    "тезисы": "thesis", "тезисный план": "thesis",
-    "thesis": "thesis", "3": "thesis",
+    "факты": "extractive",
+    "ключевые факты": "extractive",
+    "extractive": "extractive",
+    "1": "extractive",
+    "пересказ": "abstractive",
+    "краткий пересказ": "abstractive",
+    "abstractive": "abstractive",
+    "2": "abstractive",
+    "тезисы": "thesis",
+    "тезисный план": "thesis",
+    "thesis": "thesis",
+    "3": "thesis",
 }
 
 
 class SummarizeType(StrEnum):
     """Форматы суммаризации."""
+
     EXTRACTIVE = "extractive"
     ABSTRACTIVE = "abstractive"
     THESIS = "thesis"
@@ -71,12 +86,16 @@ class SummarizeType(StrEnum):
 def _get_att_name(attachment: Any) -> str:
     if isinstance(attachment, dict):
         return (
-            attachment.get("name") or attachment.get("fileName")
-            or attachment.get("originalName") or ""
+            attachment.get("name")
+            or attachment.get("fileName")
+            or attachment.get("originalName")
+            or ""
         )
     return (
-        getattr(attachment, "name", None) or getattr(attachment, "fileName", None)
-        or getattr(attachment, "originalName", None) or ""
+        getattr(attachment, "name", None)
+        or getattr(attachment, "fileName", None)
+        or getattr(attachment, "originalName", None)
+        or ""
     )
 
 
@@ -90,9 +109,7 @@ def _resolve_attachment(attachments: list[Any], hint: str) -> Any | None:
     """Резолвит вложение по UUID или имени файла (4 уровня fallback)."""
     hint_stripped = hint.strip()
     if UUID_RE.match(hint_stripped):
-        found = next(
-            (a for a in attachments if _get_att_id(a) == hint_stripped), None
-        )
+        found = next((a for a in attachments if _get_att_id(a) == hint_stripped), None)
         if found is not None:
             return found
 
@@ -117,8 +134,10 @@ def _build_attachment_meta(attachment: Any) -> dict[str, Any]:
     """Строит читаемый dict метаданных вложения."""
     name = _get_att_name(attachment) or "unknown"
     size_bytes: int = (
-        (attachment.get("size") if isinstance(attachment, dict) else getattr(attachment, "size", None)) or 0
-    )
+        attachment.get("size")
+        if isinstance(attachment, dict)
+        else getattr(attachment, "size", None)
+    ) or 0
     return {
         "название": name,
         "размер_кб": round(size_bytes / 1024, 2) if size_bytes else 0,
@@ -158,7 +177,10 @@ def _unwrap_json_envelope(text: str) -> str:
 def _heuristic_recommendation(text: str) -> dict[str, str]:
     """Эвристически рекомендует формат суммаризации."""
     if not text:
-        return {"recommended": "abstractive", "reason": "Текст пуст или очень короткий."}
+        return {
+            "recommended": "abstractive",
+            "reason": "Текст пуст или очень короткий.",
+        }
 
     chars = len(text)
     lines = text.count("\n")
@@ -189,14 +211,12 @@ def _truncate_for_llm(text: str, max_length: int = _MAX_SUMMARY_CHARS) -> str:
         return text
     head = int(max_length * _HEAD_FRACTION)
     tail = max_length - head
-    return (
-        text[:head]
-        + "\n\n[... часть содержимого пропущена ...]\n\n"
-        + text[-tail:]
-    )
+    return text[:head] + "\n\n[... часть содержимого пропущена ...]\n\n" + text[-tail:]
 
 
-async def _execute_summarization(text: str, summary_type: SummarizeType) -> dict[str, Any]:
+async def _execute_summarization(
+    text: str, summary_type: SummarizeType
+) -> dict[str, Any]:
     """Выполняет суммаризацию через LLM."""
     from edms_ai_assistant.llm_client import get_llm_response
 
@@ -204,33 +224,59 @@ async def _execute_summarization(text: str, summary_type: SummarizeType) -> dict
         return {
             "status": "success",
             "content": "Текст слишком короткий для глубокого анализа.",
-            "meta": {"format_used": summary_type.value, "text_length": len(text), "was_truncated": False},
+            "meta": {
+                "format_used": summary_type.value,
+                "text_length": len(text),
+                "was_truncated": False,
+            },
         }
 
     was_truncated = len(text) > _MAX_SUMMARY_CHARS
     processing_text = _truncate_for_llm(text)
 
     base_constraints = (
-        "Опирайся ИСКЛЮЧИТЕЛЬНО на текст документа. Не выдумывай факты. "
-        "Отвечай строго на русском языке. "
-        "НЕ используй вводные фразы («В данном документе», «Вот ваш анализ»). "
-        "Начинай ответ сразу с сути."
+        "<constraints>\n"
+        "1. Опирайся ИСКЛЮЧИТЕЛЬНО на текст внутри тегов <document>. Не выдумывай факты, даты, суммы или имена.\n"
+        "2. Если в тексте нет информации для ответа, напиши: «В документе недостаточно данных».\n"
+        "3. Отвечай строго на русском языке.\n"
+        "4. НЕ ИСПОЛЬЗУЙ вводные и шаблонные фразы (например: «В данном документе», «Текст содержит», «Вот ваш анализ»). Начинай ответ сразу с сути.\n"
+        "</constraints>"
     )
 
-    instructions = {
+    instructions: dict[SummarizeType, str] = {
         SummarizeType.EXTRACTIVE: (
-            "Выполни экстрактивную суммаризацию. "
-            "Найди и выпиши: конкретные даты, суммы, имена лиц, сроки, метрики. "
-            "Оформи СТРОГО нумерованным списком. Каждый пункт — одна конкретная сущность."
+            "<task>\n"
+            "Выполни экстрактивную суммаризацию (извлечение точных фактов).\n"
+            "</task>\n"
+            "<formatting_rules>\n"
+            "- Найди и выпиши: конкретные даты, суммы, имена лиц, названия компаний, сроки, метрики и обязательства.\n"
+            "- Оформи СТРОГО нумерованным списком.\n"
+            "- Каждый пункт должен содержать конкретную сущность (например: «Срок сдачи проекта — 15 мая», а не «Указаны сроки сдачи»).\n"
+            "- Формат пункта: 1-2 лаконичных предложения.\n"
+            "</formatting_rules>"
         ),
         SummarizeType.ABSTRACTIVE: (
-            "Сформируй краткий пересказ сути документа своими словами (1–2 абзаца). "
-            "Пиши так, чтобы руководитель за 10 секунд понял всю суть."
+            "<task>\n"
+            "Сформируй абстрактивную суммаризацию (Executive Summary).\n"
+            "</task>\n"
+            "<formatting_rules>\n"
+            "- Напиши связный пересказ сути документа своими словами (строго 1–2 абзаца).\n"
+            "- Текст должен обладать высокой смысловой плотностью: фокусируйся на проблеме, предложенном решении и ключевых последствиях.\n"
+            "- Убери 'воду', бюрократические обороты и излишние технические детали.\n"
+            "- Пиши так, чтобы руководитель высшего звена за 10 секунд понял всю суть документа.\n"
+            "</formatting_rules>"
         ),
         SummarizeType.THESIS: (
-            "Создай иерархический тезисный план. "
-            "Используй нумерацию (1., 1.1., 1.2., 2.). "
-            "Каждый тезис — одно ёмкое законченное предложение."
+            "<task>\n"
+            "Создай иерархический тезисный план документа.\n"
+            "</task>\n"
+            "<formatting_rules>\n"
+            "- Используй строгую многоуровневую нумерацию (1., 1.1., 1.2., 2., 2.1.).\n"
+            "- Главные разделы (1., 2.) должны отражать крупные смысловые блоки текста.\n"
+            "- Подпункты (1.1., 1.2.) должны раскрывать суть раздела.\n"
+            "- Каждый тезис — это одно ёмкое, законченное предложение, а не просто название темы.\n"
+            "- Сохраняй хронологическую и логическую структуру оригинального текста.\n"
+            "</formatting_rules>"
         ),
     }
 
@@ -250,7 +296,10 @@ async def _execute_summarization(text: str, summary_type: SummarizeType) -> dict
         }
     except Exception as exc:
         logger.error("LLM summarization failed: %s", exc, exc_info=True)
-        return {"status": "error", "message": f"Не удалось проанализировать документ: {exc}"}
+        return {
+            "status": "error",
+            "message": f"Не удалось проанализировать документ: {exc}",
+        }
 
 
 # ── FastMCP tool регистрация ──────────────────────────────────────────────────
@@ -293,12 +342,20 @@ def register_content_tools(mcp: FastMCP) -> None:
                 raw_data = await doc_client.get_document_metadata(token, document_id)
 
             if not raw_data:
-                return {"status": "error", "message": "Документ не найден.", "summary_type": summary_type}
+                return {
+                    "status": "error",
+                    "message": "Документ не найден.",
+                    "summary_type": summary_type,
+                }
 
             attachments = raw_data.get("attachmentDocument") or []
 
             if not attachments:
-                return {"status": "info", "message": "В документе нет вложений.", "summary_type": summary_type}
+                return {
+                    "status": "info",
+                    "message": "В документе нет вложений.",
+                    "summary_type": summary_type,
+                }
 
             # Резолвинг вложения
             if attachment_id:
@@ -318,7 +375,8 @@ def register_content_tools(mcp: FastMCP) -> None:
             else:
                 available = [
                     {"id": _get_att_id(a), "name": _get_att_name(a) or "без имени"}
-                    for a in attachments if _get_att_id(a)
+                    for a in attachments
+                    if _get_att_id(a)
                 ]
                 return {
                     "status": "requires_disambiguation",
@@ -332,17 +390,28 @@ def register_content_tools(mcp: FastMCP) -> None:
             suffix = Path(file_name).suffix.lower() if file_name else ".tmp"
 
             att_doc_id = str(
-                (target.get("documentId") if isinstance(target, dict) else getattr(target, "documentId", None))
+                (
+                    target.get("documentId")
+                    if isinstance(target, dict)
+                    else getattr(target, "documentId", None)
+                )
                 or document_id
             )
 
             # Только метаданные
             if mode == "metadata":
-                return {"status": "success", "mode": "metadata", "file_info": file_info, "summary_type": summary_type}
+                return {
+                    "status": "success",
+                    "mode": "metadata",
+                    "file_info": file_info,
+                    "summary_type": summary_type,
+                }
 
             # Скачивание
             async with EdmsAttachmentClient() as att_client:
-                content_bytes = await att_client.get_attachment_content(token, att_doc_id, resolved_id)
+                content_bytes = await att_client.get_attachment_content(
+                    token, att_doc_id, resolved_id
+                )
 
             if not content_bytes:
                 return {
@@ -359,10 +428,14 @@ def register_content_tools(mcp: FastMCP) -> None:
                     tmp_path = tmp.name
 
                 if mode == "full":
-                    structured = await FileProcessorService.extract_structured_data(tmp_path)
+                    structured = await FileProcessorService.extract_structured_data(
+                        tmp_path
+                    )
                     text_content = structured.get("text", "")
                     return {
-                        "status": "success", "mode": "full", "file_info": file_info,
+                        "status": "success",
+                        "mode": "full",
+                        "file_info": file_info,
                         "content": text_content[:_MAX_TEXT_CHARS],
                         "is_truncated": len(text_content) > _MAX_TEXT_CHARS,
                         "total_chars": len(text_content),
@@ -376,13 +449,19 @@ def register_content_tools(mcp: FastMCP) -> None:
                         return {
                             "status": "error",
                             "message": f"Режим 'tables' только для Excel/CSV. Текущий: '{suffix}'.",
-                            "file_info": file_info, "summary_type": summary_type,
+                            "file_info": file_info,
+                            "summary_type": summary_type,
                         }
-                    structured = await FileProcessorService.extract_structured_data(tmp_path)
+                    structured = await FileProcessorService.extract_structured_data(
+                        tmp_path
+                    )
                     tables = structured.get("tables", [])
                     return {
-                        "status": "success", "mode": "tables", "file_info": file_info,
-                        "tables": tables, "tables_count": len(tables) if tables else 0,
+                        "status": "success",
+                        "mode": "tables",
+                        "file_info": file_info,
+                        "tables": tables,
+                        "tables_count": len(tables) if tables else 0,
                         "summary_type": summary_type,
                     }
 
@@ -391,19 +470,25 @@ def register_content_tools(mcp: FastMCP) -> None:
                     return {
                         "status": "warning",
                         "message": f"Формат '{suffix}' не поддерживается. Поддерживаемые: {', '.join(sorted(_ALL_SUPPORTED))}",
-                        "file_info": file_info, "summary_type": summary_type,
+                        "file_info": file_info,
+                        "summary_type": summary_type,
                     }
 
                 text_content = await FileProcessorService.extract_text_async(tmp_path)
-                if not text_content or text_content.startswith(("Ошибка:", "Формат файла")):
+                if not text_content or text_content.startswith(
+                    ("Ошибка:", "Формат файла")
+                ):
                     return {
                         "status": "error",
                         "message": f"Не удалось извлечь текст из «{file_name}»: {text_content}",
-                        "file_info": file_info, "summary_type": summary_type,
+                        "file_info": file_info,
+                        "summary_type": summary_type,
                     }
 
                 return {
-                    "status": "success", "mode": "text", "file_info": file_info,
+                    "status": "success",
+                    "mode": "text",
+                    "file_info": file_info,
                     "content": text_content[:_MAX_TEXT_CHARS],
                     "is_truncated": len(text_content) > _MAX_TEXT_CHARS,
                     "total_chars": len(text_content),
@@ -448,7 +533,10 @@ def register_content_tools(mcp: FastMCP) -> None:
         if not path.exists():
             return {"status": "error", "message": f"Файл не найден: '{cleaned}'."}
         if not path.is_file():
-            return {"status": "error", "message": f"Указанный путь не является файлом: '{cleaned}'."}
+            return {
+                "status": "error",
+                "message": f"Указанный путь не является файлом: '{cleaned}'.",
+            }
 
         suffix = path.suffix.lower()
         size_bytes = path.stat().st_size
@@ -530,7 +618,10 @@ def register_content_tools(mcp: FastMCP) -> None:
 
             attachments = raw_data.get("attachmentDocument") or []
             if not attachments:
-                return {"status": "error", "message": "В документе нет вложений для сравнения."}
+                return {
+                    "status": "error",
+                    "message": "В документе нет вложений для сравнения.",
+                }
 
         except Exception as exc:
             return {"status": "error", "message": f"Ошибка получения метаданных: {exc}"}
@@ -541,7 +632,8 @@ def register_content_tools(mcp: FastMCP) -> None:
             if target is None:
                 available = [
                     {"id": _get_att_id(a), "name": _get_att_name(a) or "без имени"}
-                    for a in attachments if _get_att_id(a)
+                    for a in attachments
+                    if _get_att_id(a)
                 ]
                 return {
                     "status": "requires_disambiguation",
@@ -555,7 +647,8 @@ def register_content_tools(mcp: FastMCP) -> None:
             if target is None:
                 available = [
                     {"id": _get_att_id(a), "name": _get_att_name(a) or "без имени"}
-                    for a in attachments if _get_att_id(a)
+                    for a in attachments
+                    if _get_att_id(a)
                 ]
                 return {
                     "status": "requires_disambiguation",
@@ -567,16 +660,25 @@ def register_content_tools(mcp: FastMCP) -> None:
         resolved_name = _get_att_name(target) or "attachment"
         resolved_suffix = Path(resolved_name).suffix.lower() or ".tmp"
         att_doc_id = str(
-            (target.get("documentId") if isinstance(target, dict) else getattr(target, "documentId", None))
+            (
+                target.get("documentId")
+                if isinstance(target, dict)
+                else getattr(target, "documentId", None)
+            )
             or document_id
         )
 
         # Скачивание вложения
         try:
             async with EdmsAttachmentClient() as att_client:
-                att_bytes = await att_client.get_attachment_content(token, att_doc_id, resolved_id)
+                att_bytes = await att_client.get_attachment_content(
+                    token, att_doc_id, resolved_id
+                )
         except Exception as exc:
-            return {"status": "error", "message": f"Ошибка скачивания «{resolved_name}»: {exc}"}
+            return {
+                "status": "error",
+                "message": f"Ошибка скачивания «{resolved_name}»: {exc}",
+            }
 
         if not att_bytes:
             return {"status": "error", "message": f"Вложение «{resolved_name}» пустое."}
@@ -592,7 +694,9 @@ def register_content_tools(mcp: FastMCP) -> None:
         att_text_raw = ""
         tmp_path: str | None = None
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=resolved_suffix) as tmp:
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=resolved_suffix
+            ) as tmp:
                 tmp.write(att_bytes)
                 tmp_path = tmp.name
             att_text_raw = await FileProcessorService.extract_text_async(tmp_path)
@@ -613,7 +717,9 @@ def register_content_tools(mcp: FastMCP) -> None:
         att_text = _norm(att_text_raw[:_MAX_TEXT_CHARS])
         are_identical = local_text == att_text
         similarity = round(
-            difflib.SequenceMatcher(None, local_text, att_text, autojunk=False).ratio() * 100, 1
+            difflib.SequenceMatcher(None, local_text, att_text, autojunk=False).ratio()
+            * 100,
+            1,
         )
 
         diff_result: list[dict[str, str]] = []
@@ -633,9 +739,13 @@ def register_content_tools(mcp: FastMCP) -> None:
                 if not stripped:
                     continue
                 if line.startswith("+"):
-                    diff_result.append({"type": "added_in_attachment", "content": stripped})
+                    diff_result.append(
+                        {"type": "added_in_attachment", "content": stripped}
+                    )
                 elif line.startswith("-"):
-                    diff_result.append({"type": "removed_from_local", "content": stripped})
+                    diff_result.append(
+                        {"type": "removed_from_local", "content": stripped}
+                    )
                 if len(diff_result) >= _MAX_DIFF_LINES:
                     break
 
@@ -645,8 +755,14 @@ def register_content_tools(mcp: FastMCP) -> None:
             "similarity_percent": similarity,
             "local_file": display_name,
             "attachment_name": resolved_name,
-            "local_stats": {"chars": len(local_text), "lines": local_text.count("\n") + 1},
-            "attachment_stats": {"chars": len(att_text), "lines": att_text.count("\n") + 1},
+            "local_stats": {
+                "chars": len(local_text),
+                "lines": local_text.count("\n") + 1,
+            },
+            "attachment_stats": {
+                "chars": len(att_text),
+                "lines": att_text.count("\n") + 1,
+            },
             "differences": diff_result,
             "summary": (
                 f"Файлы идентичны (схожесть: {similarity}%)."

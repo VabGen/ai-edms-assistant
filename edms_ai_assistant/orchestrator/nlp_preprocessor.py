@@ -10,13 +10,13 @@ NLU-препроцессор для русскоязычных запросов 
     NLPPreprocessor   — основной класс
     get_preprocessor() — синглтон
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
-
 
 # ── Датаклассы ────────────────────────────────────────────────────────────
 
@@ -54,41 +54,58 @@ _UUID_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
     re.IGNORECASE,
 )
-_DOC_NUMBER_RE = re.compile(r"\b(?:DOC-\d{1,10}|#\d{4,10}|№\s*\d{4,10})\b", re.IGNORECASE)
+_DOC_NUMBER_RE = re.compile(
+    r"\b(?:DOC-\d{1,10}|#\d{4,10}|№\s*\d{4,10})\b", re.IGNORECASE
+)
 _DATE_RE = re.compile(
-    r"\b(\d{2})[./](\d{2})[./](\d{4})\b"
-    r"|\b(\d{4})-(\d{2})-(\d{2})\b"
+    r"\b(\d{2})[./](\d{2})[./](\d{4})\b" r"|\b(\d{4})-(\d{2})-(\d{2})\b"
 )
 _PAGE_RE = re.compile(r"\bстраниц[аую]?\s+(\d+)\b|\bpage\s+(\d+)\b", re.IGNORECASE)
 _LIMIT_RE = re.compile(
     r"\b(?:первые|покажи|top)\s+(\d+)\b|\b(\d+)\s+(?:документов|результатов|записей)\b",
     re.IGNORECASE,
 )
-_NAME_RE = re.compile(
-    r"\b([А-ЯЁ][а-яё]+)\s+([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)\b"
-)
+_NAME_RE = re.compile(r"\b([А-ЯЁ][а-яё]+)\s+([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)\b")
 _DEPT_RE = re.compile(
     r"\b(?:отдел|департамент|управление|служба)\s+([А-Яа-яёЁ\s]+?)(?:\s|$|\.|,)",
     re.IGNORECASE,
 )
 
 _STATUS_MAP: dict[str, str] = {
-    "черновик": "draft", "черновике": "draft", "в работе": "draft",
-    "на согласовании": "review", "на проверке": "review", "ожидает согласования": "review",
-    "одобрен": "approved", "согласован": "approved", "утверждён": "approved",
-    "отклонён": "rejected", "отказан": "rejected", "возвращён": "rejected",
-    "подписан": "signed", "подписанный": "signed",
-    "в архиве": "archived", "архивный": "archived", "архивирован": "archived",
+    "черновик": "draft",
+    "черновике": "draft",
+    "в работе": "draft",
+    "на согласовании": "review",
+    "на проверке": "review",
+    "ожидает согласования": "review",
+    "одобрен": "approved",
+    "согласован": "approved",
+    "утверждён": "approved",
+    "отклонён": "rejected",
+    "отказан": "rejected",
+    "возвращён": "rejected",
+    "подписан": "signed",
+    "подписанный": "signed",
+    "в архиве": "archived",
+    "архивный": "archived",
+    "архивирован": "archived",
 }
 
 _DOC_TYPES: list[str] = ["договор", "приказ", "акт", "счёт", "протокол", "спецификация"]
 _DOC_TYPE_VARIANTS: dict[str, str] = {
-    "договоры": "договор", "договора": "договор", "договором": "договор",
-    "приказы": "приказ", "приказа": "приказ",
-    "акты": "акт", "актов": "акт",
-    "счета": "счёт", "счетов": "счёт",
-    "протоколы": "протокол", "протоколов": "протокол",
-    "спецификации": "спецификация", "спецификаций": "спецификация",
+    "договоры": "договор",
+    "договора": "договор",
+    "договором": "договор",
+    "приказы": "приказ",
+    "приказа": "приказ",
+    "акты": "акт",
+    "актов": "акт",
+    "счета": "счёт",
+    "счетов": "счёт",
+    "протоколы": "протокол",
+    "протоколов": "протокол",
+    "спецификации": "спецификация",
+    "спецификаций": "спецификация",
 }
 
 _RELATIVE_DATES: list[tuple[re.Pattern, int, int]] = [
@@ -105,35 +122,85 @@ _RELATIVE_DATES: list[tuple[re.Pattern, int, int]] = [
 
 _INTENT_KEYWORDS: dict[str, dict[str, list[str]]] = {
     "get_document": {
-        "primary": ["покажи документ", "открой документ", "найди документ", "что за документ", "детали документа"],
+        "primary": [
+            "покажи документ",
+            "открой документ",
+            "найди документ",
+            "что за документ",
+            "детали документа",
+        ],
         "secondary": ["покажи", "открой", "посмотри", "документ"],
     },
     "search_documents": {
-        "primary": ["найди все", "поиск документов", "список документов", "покажи все договоры", "все документы"],
+        "primary": [
+            "найди все",
+            "поиск документов",
+            "список документов",
+            "покажи все договоры",
+            "все документы",
+        ],
         "secondary": ["найди", "поищи", "список", "реестр", "сколько документов"],
     },
     "create_document": {
-        "primary": ["создай документ", "создай договор", "создай приказ", "новый документ", "заведи документ"],
+        "primary": [
+            "создай документ",
+            "создай договор",
+            "создай приказ",
+            "новый документ",
+            "заведи документ",
+        ],
         "secondary": ["создай", "оформи", "зарегистрируй"],
     },
     "update_status": {
-        "primary": ["измени статус", "сменить статус", "согласуй", "подпиши", "отклони", "архивируй", "отправь на согласование"],
+        "primary": [
+            "измени статус",
+            "сменить статус",
+            "согласуй",
+            "подпиши",
+            "отклони",
+            "архивируй",
+            "отправь на согласование",
+        ],
         "secondary": ["утвердить", "перевести в статус"],
     },
     "get_history": {
-        "primary": ["история документа", "журнал изменений", "кто изменял", "аудит документа", "что делали с документом"],
+        "primary": [
+            "история документа",
+            "журнал изменений",
+            "кто изменял",
+            "аудит документа",
+            "что делали с документом",
+        ],
         "secondary": ["история", "журнал", "аудит"],
     },
     "assign_document": {
-        "primary": ["назначь ответственного", "передай документ", "добавь в согласующие", "поставь на согласование", "назначить рецензента"],
+        "primary": [
+            "назначь ответственного",
+            "передай документ",
+            "добавь в согласующие",
+            "поставь на согласование",
+            "назначить рецензента",
+        ],
         "secondary": ["назначь", "передай", "добавь исполнителя"],
     },
     "get_analytics": {
-        "primary": ["статистика документов", "отчёт по документам", "аналитика", "нагрузка на отдел", "просроченные документы"],
+        "primary": [
+            "статистика документов",
+            "отчёт по документам",
+            "аналитика",
+            "нагрузка на отдел",
+            "просроченные документы",
+        ],
         "secondary": ["статистика", "отчёт", "метрики", "дашборд"],
     },
     "get_workflow_status": {
-        "primary": ["где застрял документ", "кто не согласовал", "статус согласования", "прогресс документа", "кто должен подписать"],
+        "primary": [
+            "где застрял документ",
+            "кто не согласовал",
+            "статус согласования",
+            "прогресс документа",
+            "кто должен подписать",
+        ],
         "secondary": ["статус", "прогресс", "ожидает", "процесс"],
     },
 }
@@ -200,7 +267,9 @@ class NLPPreprocessor:
         return ids
 
     def _extract_date_range(self, text: str) -> tuple[datetime, datetime] | None:
-        now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        now = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
         for pattern, start_off, end_off in _RELATIVE_DATES:
             if pattern.search(text):
                 start = now + timedelta(days=start_off)
@@ -324,28 +393,44 @@ class NLPPreprocessor:
             return False, None, None
 
         if intent == "get_document" and entities.document_ids:
-            return True, "get_document", {
-                "document_id": entities.document_ids[0],
-                "include_history": False,
-                "include_attachments": True,
-            }
+            return (
+                True,
+                "get_document",
+                {
+                    "document_id": entities.document_ids[0],
+                    "include_history": False,
+                    "include_attachments": True,
+                },
+            )
 
         if intent == "get_history" and entities.document_ids:
-            return True, "get_document_history", {
-                "document_id": entities.document_ids[0],
-                "limit": entities.limit or 50,
-            }
+            return (
+                True,
+                "get_document_history",
+                {
+                    "document_id": entities.document_ids[0],
+                    "limit": entities.limit or 50,
+                },
+            )
 
         if intent == "get_workflow_status" and entities.document_ids:
-            return True, "get_workflow_status", {
-                "document_id": entities.document_ids[0],
-                "include_completed": False,
-            }
+            return (
+                True,
+                "get_workflow_status",
+                {
+                    "document_id": entities.document_ids[0],
+                    "include_completed": False,
+                },
+            )
 
         if intent == "search_documents":
-            has_filters = any([
-                entities.statuses, entities.document_types, entities.date_range,
-            ])
+            has_filters = any(
+                [
+                    entities.statuses,
+                    entities.document_types,
+                    entities.date_range,
+                ]
+            )
             if has_filters:
                 args: dict[str, Any] = {
                     "page": entities.page_number or 1,

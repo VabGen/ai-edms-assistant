@@ -1,6 +1,6 @@
 # edms_ai_assistant/clients/department_client.py
 import logging
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Any
 from uuid import UUID
 
@@ -9,7 +9,7 @@ from .base_client import EdmsBaseClient, EdmsHttpClient
 logger = logging.getLogger(__name__)
 
 
-class BaseDepartmentClient(EdmsBaseClient):
+class BaseDepartmentClient(EdmsBaseClient, ABC):
 
     @abstractmethod
     async def find_by_name(

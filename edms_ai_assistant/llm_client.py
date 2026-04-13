@@ -1,18 +1,20 @@
 # edms_ai_assistant/llm_client.py
 """
-Единый LLM-адаптер для всего монорепо EDMS AI Assistant.
+Единый LLM-адаптер для всего EDMS AI Assistant.
 
 Поддерживает два бэкенда:
     1. Ollama / OpenAI-compatible API  — через httpx (нативный JSON)
     2. Anthropic API                   — через anthropic.AsyncAnthropic
 
-Выбор бэкенда:
-    - Если ANTHROPIC_API_KEY задан → Anthropic
-    - Иначе → Ollama (OLLAMA_BASE_URL + MODEL_NAME)
+Ключевое различие форматов tool_result:
+    Anthropic:  role=user, content=[{type:tool_result, tool_use_id, content}]
+    OpenAI:     role=tool, tool_call_id, content (строка)
 
-Импорт везде одинаковый:
-    from edms_ai_assistant.llm_client import get_llm_client, LLMClient
+OllamaClient.create() конвертирует историю сообщений из Anthropic-формата
+в OpenAI-формат перед отправкой, поэтому весь остальной код (agent.py,
+ReAct-цикл) использует единственный Anthropic-формат внутри.
 """
+
 from __future__ import annotations
 
 import json
@@ -29,12 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_model(model_name: str) -> str:
-    """
-    Резолвит имя модели.
-
-    claude-* алиасы → модели из .env.
-    Всё остальное → без изменений.
-    """
+    """Резолвит claude-* алиасы в модели из .env."""
     if not model_name.startswith("claude-"):
         return model_name
     mapping = {
@@ -66,11 +63,7 @@ class ContentBlock:
 
 @dataclass
 class LLMResponse:
-    """
-    Унифицированный ответ LLM.
-
-    Совместим с anthropic.types.Message по атрибутам.
-    """
+    """Унифицированный ответ LLM (совместим с anthropic.types.Message)."""
 
     content: list[ContentBlock]
     stop_reason: str = "end_turn"
@@ -83,12 +76,114 @@ class LLMResponse:
             self.stop_reason = "end_turn"
 
 
-class OllamaClient:
-    """
-    Клиент для Ollama / OpenAI-compatible API.
+def _convert_messages_to_openai(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Конвертирует историю из Anthropic-формата в OpenAI-формат.
 
-    Эндпоинт: POST {OLLAMA_BASE_URL}/v1/chat/completions
+    Anthropic tool_result (внутренний формат агента):
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "id", "content": "..."}]}
+
+    OpenAI tool message (что принимает Ollama):
+        {"role": "tool", "tool_call_id": "id", "content": "..."}
+
+    Anthropic tool_use в ответе ассистента:
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "id", "name": "fn", "input": {...}},
+                                           {"type": "text", "text": "..."}]}
+
+    OpenAI tool_calls в ответе ассистента:
+        {"role": "assistant", "content": "...", "tool_calls": [{"id": "id", "type": "function",
+          "function": {"name": "fn", "arguments": "{...}"}}]}
     """
+    result: list[dict[str, Any]] = []
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        # ── Обычное текстовое сообщение ────────────────────────────────────
+        if isinstance(content, str):
+            result.append({"role": role, "content": content})
+            continue
+
+        # ── content — список блоков (Anthropic формат) ─────────────────────
+        if isinstance(content, list):
+            # Случай 1: user сообщение с tool_result блоками
+            tool_results = [
+                b
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "tool_result"
+            ]
+            if tool_results and role == "user":
+                # Каждый tool_result → отдельное tool-сообщение в OpenAI формате
+                for tr in tool_results:
+                    tool_content = tr.get("content", "")
+                    # content может быть списком [{type:text, text:...}]
+                    if isinstance(tool_content, list):
+                        tool_content = " ".join(
+                            b.get("text", "")
+                            for b in tool_content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    result.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tr.get("tool_use_id", ""),
+                            "content": str(tool_content),
+                        }
+                    )
+                continue
+
+            # Случай 2: assistant сообщение с text и/или tool_use блоками
+            if role == "assistant":
+                text_parts = [
+                    b.get("text", "")
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                tool_uses = [
+                    b
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_use"
+                ]
+
+                openai_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": " ".join(text_parts).strip() or None,
+                }
+
+                if tool_uses:
+                    openai_msg["tool_calls"] = [
+                        {
+                            "id": tu.get("id", f"call_{i}"),
+                            "type": "function",
+                            "function": {
+                                "name": tu.get("name", ""),
+                                "arguments": json.dumps(
+                                    tu.get("input", {}), ensure_ascii=False
+                                ),
+                            },
+                        }
+                        for i, tu in enumerate(tool_uses)
+                    ]
+
+                result.append(openai_msg)
+                continue
+
+            # Случай 3: user сообщение с текстовыми блоками (не tool_result)
+            text_content = " ".join(
+                b.get("text", "")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            ).strip()
+            if text_content:
+                result.append({"role": role, "content": text_content})
+
+    return result
+
+
+class OllamaClient:
+    """Клиент для Ollama / OpenAI-compatible API."""
 
     def __init__(self) -> None:
         self._base_url = settings.OLLAMA_BASE_URL.rstrip("/")
@@ -103,11 +198,14 @@ class OllamaClient:
         max_tokens: int = 2048,
         temperature: float = 0.6,
     ) -> LLMResponse:
-        """Вызывает Ollama /v1/chat/completions."""
+        """Вызывает Ollama /v1/chat/completions с конвертацией формата сообщений."""
+        # Системное сообщение
         chat_messages: list[dict[str, Any]] = []
         if system:
             chat_messages.append({"role": "system", "content": system})
-        chat_messages.extend(messages)
+
+        # Конвертируем историю из Anthropic → OpenAI формата
+        chat_messages.extend(_convert_messages_to_openai(messages))
 
         payload: dict[str, Any] = {
             "model": model,
@@ -222,7 +320,7 @@ class AnthropicAdapter:
         max_tokens: int = 2048,
         temperature: float = 0.6,
     ) -> LLMResponse:
-        """Вызывает Anthropic API."""
+        """Вызывает Anthropic API (уже принимает Anthropic-формат напрямую)."""
         if not self._available or self._client is None:
             raise RuntimeError("Anthropic SDK not available")
 
@@ -262,27 +360,14 @@ class AnthropicAdapter:
 
 
 class LLMClient:
-    """
-    Единый LLM-клиент с автовыбором бэкенда.
-
-    Приоритет:
-        1. Anthropic API (если ANTHROPIC_API_KEY задан)
-        2. Ollama (OLLAMA_BASE_URL)
-    """
+    """Единый LLM-клиент с автовыбором бэкенда (Anthropic → Ollama)."""
 
     def __init__(self) -> None:
         self._anthropic = AnthropicAdapter()
         self._ollama = OllamaClient()
-
-        if self._anthropic._available:
-            self._backend = "anthropic"
-        else:
-            self._backend = "ollama"
-
+        self._backend = "anthropic" if self._anthropic._available else "ollama"
         logger.info(
-            "LLMClient: backend=%s model=%s",
-            self._backend,
-            settings.MODEL_NAME,
+            "LLMClient: backend=%s model=%s", self._backend, settings.MODEL_NAME
         )
 
     async def create(
@@ -294,17 +379,7 @@ class LLMClient:
         max_tokens: int = 2048,
         temperature: float | None = None,
     ) -> LLMResponse:
-        """
-        Создаёт LLM completion.
-
-        Args:
-            model: Имя модели. claude-* автоматически резолвится.
-            messages: История сообщений.
-            tools: Инструменты в формате Anthropic.
-            system: Системный промпт.
-            max_tokens: Максимум токенов в ответе.
-            temperature: Температура (None = из .env).
-        """
+        """Создаёт LLM completion, автоматически конвертируя формат для Ollama."""
         resolved_model = resolve_model(model)
         temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
         start_ts = time.monotonic()
@@ -364,23 +439,11 @@ class LLMClient:
 
     @property
     def backend(self) -> str:
-        """Текущий бэкенд: 'anthropic' или 'ollama'."""
         return self._backend
 
 
 async def get_llm_response(prompt: str, system: str | None = None) -> str:
-    """
-    Быстрый helper для простых LLM-вызовов без истории.
-
-    Используется в MCP-сервисах (appeal_extraction, reference_client).
-
-    Args:
-        prompt: Пользовательский промпт.
-        system: Системный промпт (опционально).
-
-    Returns:
-        Текстовый ответ модели.
-    """
+    """Быстрый helper для простых LLM-вызовов без истории."""
     client = get_llm_client()
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     response = await client.create(

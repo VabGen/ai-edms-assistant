@@ -11,6 +11,7 @@ Embeddings: sentence-transformers paraphrase-multilingual-MiniLM-L12-v2
     RAGModule     — основной класс
     get_rag()     — синглтон
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -47,7 +48,7 @@ class DialogRecord:
     tool_used: str
     tool_args: dict[str, Any]
     response: str
-    rating: int                 # -1 негатив, 0 нейтрально, 1 позитив
+    rating: int  # -1 негатив, 0 нейтрально, 1 позитив
     embedding: list[float]
     timestamp: datetime
     is_anti_example: bool = False
@@ -102,6 +103,7 @@ class _FAISSIndex:
             return True
         try:
             import faiss  # noqa: F401
+
             self._available = True
             return True
         except ImportError:
@@ -110,6 +112,7 @@ class _FAISSIndex:
 
     def _get_or_create_index(self, collection: str) -> tuple[Any, list[DialogRecord]]:
         import faiss
+
         is_anti = collection == _COLLECTION_ANTI
         records = self._anti_records if is_anti else self._records
         if is_anti:
@@ -131,7 +134,9 @@ class _FAISSIndex:
         index.add(vec)
         records.append(record)
 
-    def search(self, embedding: list[float], top_k: int, collection: str) -> list[DialogRecord]:
+    def search(
+        self, embedding: list[float], top_k: int, collection: str
+    ) -> list[DialogRecord]:
         if not self._ensure_faiss() or not embedding:
             return []
         index, records = self._get_or_create_index(collection)
@@ -179,7 +184,11 @@ class RAGModule:
             from qdrant_client import AsyncQdrantClient
             from qdrant_client.models import Distance, VectorParams
 
-            url = str(settings.QDRANT_URL) if hasattr(settings, "QDRANT_URL") else "http://localhost:6333"
+            url = (
+                str(settings.QDRANT_URL)
+                if hasattr(settings, "QDRANT_URL")
+                else "http://localhost:6333"
+            )
             self._qdrant = AsyncQdrantClient(url=url, timeout=10)
 
             for collection_name in (_COLLECTION_SUCCESS, _COLLECTION_ANTI):
@@ -188,7 +197,9 @@ class RAGModule:
                 if collection_name not in existing:
                     await self._qdrant.create_collection(
                         collection_name=collection_name,
-                        vectors_config=VectorParams(size=_VECTOR_DIM, distance=Distance.COSINE),
+                        vectors_config=VectorParams(
+                            size=_VECTOR_DIM, distance=Distance.COSINE
+                        ),
                     )
 
             self._qdrant_available = True
@@ -203,6 +214,7 @@ class RAGModule:
     async def _init_encoder(self) -> None:
         try:
             from sentence_transformers import SentenceTransformer
+
             loop = asyncio.get_event_loop()
             self._encoder = await loop.run_in_executor(
                 None, SentenceTransformer, _EMBED_MODEL
@@ -221,9 +233,7 @@ class RAGModule:
             return [0.0] * _VECTOR_DIM
         async with self._encoder_lock:
             loop = asyncio.get_event_loop()
-            vec = await loop.run_in_executor(
-                None, self._encoder.encode, text
-            )
+            vec = await loop.run_in_executor(None, self._encoder.encode, text)
             return vec.tolist()
 
     async def search_similar(
@@ -267,21 +277,25 @@ class RAGModule:
             records = []
             for hit in results:
                 payload = hit.payload or {}
-                records.append(DialogRecord(
-                    id=payload.get("id", str(hit.id)),
-                    user_query=payload.get("user_query", ""),
-                    normalized_query=payload.get("normalized_query", ""),
-                    intent=payload.get("intent", ""),
-                    tool_used=payload.get("tool_used", ""),
-                    tool_args=payload.get("tool_args", {}),
-                    response=payload.get("response", ""),
-                    rating=payload.get("rating", 0),
-                    embedding=[],
-                    timestamp=datetime.fromisoformat(
-                        payload.get("timestamp", datetime.now(timezone.utc).isoformat())
-                    ),
-                    is_anti_example=payload.get("is_anti_example", False),
-                ))
+                records.append(
+                    DialogRecord(
+                        id=payload.get("id", str(hit.id)),
+                        user_query=payload.get("user_query", ""),
+                        normalized_query=payload.get("normalized_query", ""),
+                        intent=payload.get("intent", ""),
+                        tool_used=payload.get("tool_used", ""),
+                        tool_args=payload.get("tool_args", {}),
+                        response=payload.get("response", ""),
+                        rating=payload.get("rating", 0),
+                        embedding=[],
+                        timestamp=datetime.fromisoformat(
+                            payload.get(
+                                "timestamp", datetime.now(timezone.utc).isoformat()
+                            )
+                        ),
+                        is_anti_example=payload.get("is_anti_example", False),
+                    )
+                )
             return records
         except Exception as exc:
             logger.warning("Qdrant search failed: %s — falling back to FAISS", exc)
@@ -309,6 +323,7 @@ class RAGModule:
     async def _qdrant_add(self, record: DialogRecord, collection: str) -> None:
         try:
             from qdrant_client.models import PointStruct
+
             payload = {
                 "id": record.id,
                 "user_query": record.user_query,
@@ -369,15 +384,20 @@ class RAGModule:
                     )
 
                     # Добавляем в правильную коллекцию
-                    new_collection = _COLLECTION_ANTI if rating == -1 else _COLLECTION_SUCCESS
+                    new_collection = (
+                        _COLLECTION_ANTI if rating == -1 else _COLLECTION_SUCCESS
+                    )
                     from qdrant_client.models import PointStruct
+
                     await self._qdrant.upsert(
                         collection_name=new_collection,
-                        points=[PointStruct(
-                            id=qdrant_id,
-                            vector=point.vector,
-                            payload=payload,
-                        )],
+                        points=[
+                            PointStruct(
+                                id=qdrant_id,
+                                vector=point.vector,
+                                payload=payload,
+                            )
+                        ],
                     )
                     return
 
@@ -396,7 +416,9 @@ class RAGModule:
                 Инструмент: ...
                 Ответ: ...
         """
-        records = await self.search_similar(query, top_k=5, collection=_COLLECTION_SUCCESS)
+        records = await self.search_similar(
+            query, top_k=5, collection=_COLLECTION_SUCCESS
+        )
         if not records:
             return ""
 
@@ -419,7 +441,8 @@ class RAGModule:
                 Проблема: ...
         """
         records = await self.search_similar(
-            "ошибка неправильный ответ", top_k=_MAX_ANTI_EXAMPLES,
+            "ошибка неправильный ответ",
+            top_k=_MAX_ANTI_EXAMPLES,
             collection=_COLLECTION_ANTI,
         )
         if not records:
@@ -440,11 +463,13 @@ class RAGModule:
             return {"status": "skipped", "reason": "Qdrant unavailable"}
 
         try:
-            success_count = (await self._qdrant.get_collection(_COLLECTION_SUCCESS)).points_count
-            anti_count = (await self._qdrant.get_collection(_COLLECTION_ANTI)).points_count
-            logger.info(
-                "RAG index: success=%d anti=%d", success_count, anti_count
-            )
+            success_count = (
+                await self._qdrant.get_collection(_COLLECTION_SUCCESS)
+            ).points_count
+            anti_count = (
+                await self._qdrant.get_collection(_COLLECTION_ANTI)
+            ).points_count
+            logger.info("RAG index: success=%d anti=%d", success_count, anti_count)
             return {
                 "status": "ok",
                 "successful_dialogs": success_count,

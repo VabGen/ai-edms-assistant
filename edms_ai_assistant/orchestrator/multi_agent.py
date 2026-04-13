@@ -21,6 +21,7 @@ MultiAgentCoordinator:
     Средний (write)    → Researcher → Executor → Reviewer → Explainer
     Сложный (≥3 шагов) → Planner → [R|E]* → Reviewer → Explainer
 """
+
 from __future__ import annotations
 
 import json
@@ -120,7 +121,9 @@ class BaseAgent(ABC):
 
     def _get_tools_schema(self) -> list[dict[str, Any]]:
         """Фильтрует инструменты из MCPClient по allowed_tools."""
-        all_tools: list[dict[str, Any]] = self._mcp.cached_tools if hasattr(self._mcp, "cached_tools") else []
+        all_tools: list[dict[str, Any]] = (
+            self._mcp.cached_tools if hasattr(self._mcp, "cached_tools") else []
+        )
         if not self.allowed_tools:
             return []
         return [t for t in all_tools if t.get("name") in set(self.allowed_tools)]
@@ -165,12 +168,14 @@ class BaseAgent(ABC):
                     last_text = block.text
                     assistant_blocks.append({"type": "text", "text": block.text})
                 elif block.type == "tool_use":
-                    assistant_blocks.append({
-                        "type": "tool_use",
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.input or {},
-                    })
+                    assistant_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input or {},
+                        }
+                    )
 
             messages.append({"role": "assistant", "content": assistant_blocks})
 
@@ -187,12 +192,16 @@ class BaseAgent(ABC):
                     continue
 
                 result = await self._mcp.call_tool(block.name, block.input or {})
-                tool_calls_log.append({"tool": block.name, "args": block.input, "result": result})
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(result, ensure_ascii=False, default=str),
-                })
+                tool_calls_log.append(
+                    {"tool": block.name, "args": block.input, "result": result}
+                )
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result, ensure_ascii=False, default=str),
+                    }
+                )
 
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
@@ -343,8 +352,11 @@ class ResearcherAgent(BaseAgent):
 
     name = "researcher"
     allowed_tools = [
-        "get_document", "search_documents",
-        "get_document_history", "get_workflow_status", "get_analytics",
+        "get_document",
+        "search_documents",
+        "get_document_history",
+        "get_workflow_status",
+        "get_analytics",
     ]
     role = "researcher"
 
@@ -398,7 +410,9 @@ class ExecutorAgent(BaseAgent):
 
     name = "executor"
     allowed_tools = [
-        "create_document", "update_document_status", "assign_document",
+        "create_document",
+        "update_document_status",
+        "assign_document",
     ]
     role = "executor"
 
@@ -427,9 +441,11 @@ class ExecutorAgent(BaseAgent):
 
         try:
             text, tool_calls = await self._react_loop(msg, context)
-            success = any(
-                tc.get("result", {}).get("success", False) for tc in tool_calls
-            ) if tool_calls else bool(text)
+            success = (
+                any(tc.get("result", {}).get("success", False) for tc in tool_calls)
+                if tool_calls
+                else bool(text)
+            )
 
             return AgentResult(
                 agent_name=self.name,
@@ -570,7 +586,9 @@ class ExplainerAgent(BaseAgent):
         if context.get("review"):
             rev = context["review"]
             if not rev.get("approved", True):
-                parts.append(f"Результат проверки: НЕ ОДОБРЕНО\n{rev.get('explanation', '')}\n")
+                parts.append(
+                    f"Результат проверки: НЕ ОДОБРЕНО\n{rev.get('explanation', '')}\n"
+                )
         if context.get("error_message"):
             parts.append(f"Ошибка: {context['error_message']}\n")
 
@@ -606,7 +624,13 @@ class ExplainerAgent(BaseAgent):
 # ── MultiAgentCoordinator ─────────────────────────────────────────────────
 
 
-_READ_INTENTS = {"get_document", "get_history", "get_workflow_status", "get_analytics", "search_documents"}
+_READ_INTENTS = {
+    "get_document",
+    "get_history",
+    "get_workflow_status",
+    "get_analytics",
+    "search_documents",
+}
 _WRITE_INTENTS = {"create_document", "update_status", "assign_document"}
 _COMPLEX_INTENTS = {"get_workflow_status", "get_analytics"}
 
@@ -640,9 +664,7 @@ class MultiAgentCoordinator:
 
         is_write = intent in _WRITE_INTENTS
         is_simple = bypass_llm or (
-            intent in _READ_INTENTS
-            and confidence > 0.85
-            and not is_write
+            intent in _READ_INTENTS and confidence > 0.85 and not is_write
         )
         is_complex = intent not in _READ_INTENTS | _WRITE_INTENTS
 
@@ -659,7 +681,11 @@ class MultiAgentCoordinator:
         logger.info(
             "MultiAgentCoordinator.route: intent=%s confidence=%.2f "
             "simple=%s write=%s complex=%s",
-            intent, confidence, is_simple, is_write, is_complex,
+            intent,
+            confidence,
+            is_simple,
+            is_write,
+            is_complex,
         )
 
         if is_simple:
@@ -671,7 +697,9 @@ class MultiAgentCoordinator:
         else:
             return await self._route_read(agent_context)
 
-    async def _route_simple(self, nlu_result: Any, context: dict[str, Any]) -> AgentResult:
+    async def _route_simple(
+        self, nlu_result: Any, context: dict[str, Any]
+    ) -> AgentResult:
         if nlu_result.bypass_llm and nlu_result.required_tool:
             result = await self._mcp.call_tool(
                 nlu_result.required_tool, nlu_result.tool_args or {}
@@ -725,7 +753,11 @@ class MultiAgentCoordinator:
 
             step_ctx = {
                 **context,
-                "plan_step": {"action": step.action, "tool": step.tool, "args": step.args},
+                "plan_step": {
+                    "action": step.action,
+                    "tool": step.tool,
+                    "args": step.args,
+                },
             }
 
             if step.tool in _RESEARCHER_TOOLS:
@@ -737,7 +769,9 @@ class MultiAgentCoordinator:
                 else:
                     step.failed = True
                     if not step.can_fail:
-                        context["error_message"] = f"Шаг {step.step} провалился: {res.error}"
+                        context["error_message"] = (
+                            f"Шаг {step.step} провалился: {res.error}"
+                        )
                         break
 
             elif step.tool in _EXECUTOR_TOOLS:

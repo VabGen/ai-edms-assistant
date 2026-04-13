@@ -3,7 +3,7 @@
 Начальная миграция: схема edms + все таблицы.
 
 Включает:
-  - summarization_cache  (перенесено из orchestrator/db/database.py)
+  - summarization_cache
   - user_profiles
   - conversation_logs
   - action_history
@@ -13,6 +13,7 @@ Revision ID: 001_init
 Revises:
 Create Date: 2025-01-01 00:00:00
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa
@@ -42,9 +43,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.UniqueConstraint(
-            "file_identifier", "summary_type", name="_file_summary_uc"
-        ),
+        sa.UniqueConstraint("file_identifier", "summary_type", name="_file_summary_uc"),
         schema="edms",
     )
     op.create_index(
@@ -112,7 +111,9 @@ def upgrade() -> None:
         schema="edms",
     )
     op.create_index("ix_convlogs_user", "conversation_logs", ["user_id"], schema="edms")
-    op.create_index("ix_convlogs_session", "conversation_logs", ["session_id"], schema="edms")
+    op.create_index(
+        "ix_convlogs_session", "conversation_logs", ["session_id"], schema="edms"
+    )
     op.create_index("ix_convlogs_ts", "conversation_logs", ["timestamp"], schema="edms")
 
     # ── action_history ────────────────────────────────────────────────────

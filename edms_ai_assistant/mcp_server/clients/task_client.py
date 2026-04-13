@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 
 from edms_ai_assistant.mcp_server.models.task_models import CreateTaskRequest
 
@@ -11,7 +11,7 @@ from .base_client import EdmsBaseClient, EdmsHttpClient
 logger = logging.getLogger(__name__)
 
 
-class BaseTaskClient(EdmsBaseClient):
+class BaseTaskClient(EdmsBaseClient, ABC):
     """Abstract interface for task API clients."""
 
     @abstractmethod

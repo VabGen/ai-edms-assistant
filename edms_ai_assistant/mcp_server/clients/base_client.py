@@ -6,8 +6,8 @@ from typing import Any
 import httpx
 
 from edms_ai_assistant.config import settings
-from edms_ai_assistant.shared.utils.utils import handle_api_error, prepare_auth_headers
 from edms_ai_assistant.shared.utils.retry import async_retry
+from edms_ai_assistant.shared.utils.utils import handle_api_error, prepare_auth_headers
 
 logger = logging.getLogger(__name__)
 

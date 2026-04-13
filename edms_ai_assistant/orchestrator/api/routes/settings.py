@@ -221,8 +221,8 @@ class _RuntimeSettingsStore:
             llm={
                 "generative_url": str(settings.LLM_GENERATIVE_URL),
                 "generative_model": settings.LLM_GENERATIVE_MODEL,
-                "embedding_url": str(settings.LLM_EMBEDDING_URL),
-                "embedding_model": settings.LLM_EMBEDDING_MODEL,
+                "embedding_url": str(settings.EMBEDDING_URL),
+                "embedding_model": settings.EMBEDDING_MODEL,
                 "temperature": settings.LLM_TEMPERATURE,
                 "max_tokens": settings.LLM_MAX_TOKENS,
                 "timeout": settings.LLM_TIMEOUT,

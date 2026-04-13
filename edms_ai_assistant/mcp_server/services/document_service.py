@@ -61,17 +61,18 @@ import logging
 from typing import Any
 
 import redis.asyncio as aioredis
+from document_enricher import DocumentEnricher
+from nlp_service import EDMSNaturalLanguageService
 from pydantic import BaseModel, ConfigDict, Field
+
+from edms_ai_assistant.config import settings
+from edms_ai_assistant.generated.resources_openapi import DocumentDto
 
 from ..clients.document_client import (
     FULL_DOC_INCLUDES,
     SEARCH_DOC_INCLUDES,
     DocumentClient,
 )
-from edms_ai_assistant.config import settings
-from edms_ai_assistant.generated.resources_openapi import DocumentDto
-from document_enricher import DocumentEnricher
-from nlp_service import EDMSNaturalLanguageService
 
 logger = logging.getLogger(__name__)
 

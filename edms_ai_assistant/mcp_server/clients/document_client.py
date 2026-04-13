@@ -47,14 +47,13 @@ EDMS AI Assistant — Document HTTP Client.
 from __future__ import annotations
 
 import logging
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Any
 
 from .base_client import EdmsBaseClient, EdmsHttpClient
 
 logger = logging.getLogger(__name__)
 
-# Дефолтные параметры пагинации для поисковых запросов
 _DEFAULT_PAGE: int = 0
 _DEFAULT_SIZE: int = 10
 
@@ -84,7 +83,7 @@ SEARCH_DOC_INCLUDES: list[str] = [
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class EdmsDocumentClient(EdmsBaseClient):
+class EdmsDocumentClient(EdmsBaseClient, ABC):
     """Abstract interface for EDMS Document API clients.
 
     Определяет контракт для всех методов DocumentController.java.
@@ -290,21 +289,7 @@ class EdmsDocumentClient(EdmsBaseClient):
 
 
 def _build_includes_params(includes: list[str]) -> dict[str, list[str]]:
-    """Converts a list of Include names to Spring multi-value query params.
-
-    Java-контроллер принимает `includes` как массив enum-значений.
-    Spring автоматически биндит повторяющийся параметр в список:
-      ?includes=DOCUMENT_TYPE&includes=CORRESPONDENT&...
-
-    В httpx/aiohttp это передаётся через список в params:
-      {"includes": ["DOCUMENT_TYPE", "CORRESPONDENT", ...]}
-
-    Args:
-        includes: List of Include enum names (strings).
-
-    Returns:
-        Dict with key "includes" mapped to the list of include names.
-    """
+    """Converts a list of Include names to Spring multi-value query params."""
     return {"includes": includes}
 
 

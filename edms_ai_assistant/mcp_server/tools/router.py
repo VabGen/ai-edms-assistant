@@ -6,8 +6,7 @@ EDMS AI Assistant — Intent-Based Tool Router.
 
 Отвечает за два вопроса:
   1. Какой минимальный набор инструментов нужно передать в bind_tools
-     для данного интента? (LLM видит только этот subset — меньше токенов,
-     меньше путаницы у малых моделей.)
+     для данного интента?
   2. Сколько токенов тратит тот или иной набор инструментов?
 
 Принцип маппинга:
@@ -34,7 +33,6 @@ from ..services.nlp_service import UserIntent
 
 logger = logging.getLogger(__name__)
 
-# Примерная стоимость токенов одного инструмента в bind_tools (среднее по schemas)
 _AVG_TOKENS_PER_TOOL: int = 120
 
 
