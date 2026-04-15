@@ -688,7 +688,7 @@ class EdmsDocumentAgent:
         start_ts = time.monotonic()
         ctx = user_context or {}
 
-        from edms_ai_assistant.orchestrator.services.nlp_service import (
+        from edms_ai_assistant.mcp_server.services.nlp_service import (
             SemanticDispatcher,
         )
 
