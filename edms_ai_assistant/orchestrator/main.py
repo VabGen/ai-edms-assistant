@@ -1,3 +1,9 @@
+# edms_ai_assistant/orchestrator/main.py
+"""
+EDMS AI Assistant — главный FastAPI сервис оркестратора.
+Адаптирован для работы с EdmsAgentOrchestrator.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -24,16 +30,16 @@ from fastapi import (
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import select
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import PlainTextResponse
 
 from edms_ai_assistant.config import settings
 from edms_ai_assistant.orchestrator.db.database import AsyncSessionLocal, SummarizationCache
 from edms_ai_assistant.infrastructure.redis_client import close_redis, init_redis
 from edms_ai_assistant.orchestrator.clients.document_client import DocumentClient
 from edms_ai_assistant.orchestrator.clients.employee_client import EmployeeClient
-from edms_ai_assistant.orchestrator.agent_orchestrator import EdmsAgentOrchestrator, OrchestratorConfig
+from edms_ai_assistant.orchestrator.agent_orchestrator import EdmsAgentOrchestrator, OrchestratorConfig, AgentResponse
 from edms_ai_assistant.orchestrator.api.routes.cache import router as cache_router
 from edms_ai_assistant.orchestrator.api.routes.settings import router as settings_router
-from fastapi.responses import PlainTextResponse
 from edms_ai_assistant.orchestrator.model import (
     AssistantResponse,
     FileUploadResponse,
@@ -110,9 +116,10 @@ async def lifespan(_app: FastAPI):
 
     logger.info("Инициализация агента...")
     try:
-        _agent = EdmsAgentOrchestrator()
-        await _agent.initialize()
-        logger.info("EDMS AI Assistant запущен", extra={"health": _agent.health_check()})
+        cfg = OrchestratorConfig()
+        _agent = EdmsAgentOrchestrator(config=cfg)
+        await _agent.init()
+        logger.info("EDMS AI Assistant запущен", extra={"health": await _agent.get_health()})
     except Exception:
         logger.critical("Инициализация агента провалилась", exc_info=True)
 
@@ -224,64 +231,44 @@ async def chat_endpoint(
 
     user_context = await _resolve_user_context(user_input, user_id)
 
-    if (
-            user_input.preferred_summary_format
-            and user_input.preferred_summary_format != "ask"
-    ):
-        user_context["preferred_summary_format"] = user_input.preferred_summary_format
+    context_data = user_context.copy()
+    if user_input.file_path:
+        context_data["file_path"] = user_input.file_path
+    if user_input.file_name:
+        context_data["file_name"] = user_input.file_name
+    if user_input.context_ui_id:
+        context_data["document_id"] = user_input.context_ui_id
 
     try:
-        result = await agent.chat(
-            message=user_input.message,
-            user_token=user_input.user_token,
-            context_ui_id=user_input.context_ui_id,
-            thread_id=thread_id,
-            user_context=user_context,
-            file_path=user_input.file_path,
-            file_name=user_input.file_name,
-            human_choice=user_input.human_choice,
+        agent_response: AgentResponse = await agent.process(
+            user_message=user_input.message,
+            user_id=user_id,
+            session_id=thread_id,
+            token=user_input.user_token,
+            context=context_data,
         )
 
         latency = int((time.time() - start) * 1000)
         _metrics["requests_success"] += 1
         _metrics["latency_sum_ms"] += latency
-        _metrics["tool_calls_total"] += len(result.get("tool_calls_made", []))
-
-        _FILE_OPERATION_KEYWORDS = (
-            "сравни", "сравнение", "сравн", "compare", "отличи", "анализ",
-            "проанализируй", "суммаризир", "прочит", "содержим", "прочти",
-            "что в файл", "читай", "изучи",
-        )
-        _is_file_operation = any(
-            kw in (user_input.message or "").lower() for kw in _FILE_OPERATION_KEYWORDS
-        )
-        _is_continuation = bool(user_input.human_choice)
+        _metrics["tool_calls_total"] += len(agent_response.tools_used)
 
         if user_input.file_path and not _is_system_attachment(user_input.file_path):
-            _is_disambiguation = result.get("action_type") in (
-                "requires_disambiguation", "summarize_selection",
-            )
-            _should_cleanup = (
-                    result.get("status") not in ("requires_action",)
-                    and not _is_file_operation
-                    and not _is_continuation
-                    and not _is_disambiguation
-                    and result.get("requires_reload", False)
-            )
-            if _should_cleanup:
-                background_tasks.add_task(_cleanup_file, user_input.file_path)
-
-        final_response_text = result.get("content") or result.get("message")
+            background_tasks.add_task(_cleanup_file, user_input.file_path)
 
         return AssistantResponse(
-            status=result.get("status") or "success",
-            response=final_response_text,
-            action_type=result.get("action_type"),
-            message=result.get("message"),
-            thread_id=thread_id,
-            requires_reload=result.get("requires_reload", False),
-            navigate_url=result.get("navigate_url"),
-            metadata=result.get("metadata", {}),
+            status="success",
+            response=agent_response.content,
+            thread_id=agent_response.session_id,
+            action_type=agent_response.metadata.get("action_type"),
+            requires_reload=agent_response.metadata.get("requires_reload", False),
+            navigate_url=agent_response.metadata.get("navigate_url"),
+            metadata={
+                **agent_response.metadata,
+                "intent": agent_response.intent,
+                "model_used": agent_response.model_used,
+                "dialog_id": agent_response.dialog_id,
+            },
         )
     except Exception as exc:
         latency = int((time.time() - start) * 1000)
@@ -298,7 +285,7 @@ async def submit_feedback(
         dialog_id: str,
         rating: int,
         comment: str = "",
-        background_tasks: BackgroundTasks | None = None,
+        background_tasks: BackgroundTasks = BackgroundTasks(),
 ) -> dict:
     if rating == 1:
         _metrics["feedback_positive"] += 1
@@ -306,10 +293,12 @@ async def submit_feedback(
         _metrics["feedback_negative"] += 1
 
     ok = False
-    if _memory:
+    if _agent:
+        ok = await _agent.save_feedback(dialog_id, rating, comment)
+    elif _memory:
         ok = await _memory.update_feedback(dialog_id, rating, comment)
 
-    if ok and rating == 1 and background_tasks:
+    if ok and rating == 1:
         background_tasks.add_task(_update_rag_from_feedback, dialog_id)
 
     label = {1: "положительная", 0: "нейтральная", -1: "отрицательная"}.get(rating, "")
@@ -349,7 +338,6 @@ async def api_direct_summarize(
                     doc_dto = await doc_client.get_document_metadata(
                         user_input.user_token, user_input.context_ui_id
                     )
-
                     attachments: list = []
                     if hasattr(doc_dto, "attachmentDocument"):
                         attachments = doc_dto.attachmentDocument or []
@@ -399,7 +387,6 @@ async def api_direct_summarize(
                             metadata={
                                 "cache_file_identifier": file_identifier,
                                 "cache_summary_type": summary_type,
-                                "cache_context_ui_id": user_input.context_ui_id,
                                 "from_cache": True,
                             },
                         )
@@ -407,62 +394,54 @@ async def api_direct_summarize(
                 logger.error("Ошибка чтения кэша: %s", db_err)
 
         _type_labels = {
-            "extractive": "ключевые факты, даты, суммы",
-            "abstractive": "краткое из ложение своими словами",
+            "extractive": "ключевые факты, даты и суммы",
+            "abstractive": "краткое изложение своими словами",
             "thesis": "структурированный тезисный план",
         }
         type_label = _type_labels.get(summary_type, summary_type)
-        user_context = await _resolve_user_context(user_input, user_id)
 
-        instructions = f"Работай с вложением {current_path}. " if is_uuid else ""
-        agent_msg = f"{instructions}Проанализируй этот файл и выдели {type_label}."
+        instruction = f"Сделай {type_label} для файла/документа."
+        if current_path:
+            instruction += f" Идентификатор файла: {current_path}."
 
-        agent_result = await agent.chat(
-            message=agent_msg,
-            user_token=user_input.user_token,
-            context_ui_id=user_input.context_ui_id,
-            thread_id=new_thread_id,
-            user_context=user_context,
-            file_path=current_path,
-            human_choice=summary_type,
+        agent_response = await agent.process(
+            user_message=instruction,
+            user_id=user_id,
+            session_id=new_thread_id,
+            token=user_input.user_token,
+            context={"document_id": user_input.context_ui_id, "file_path": current_path}
         )
 
-        response_text = agent_result.get("content") or agent_result.get("response")
+        response_text = agent_response.content
 
         latency = int((time.time() - start) * 1000)
         _metrics["requests_success"] += 1
         _metrics["latency_sum_ms"] += latency
-        _metrics["tool_calls_total"] += len(agent_result.get("tool_calls_made", []))
 
         if file_identifier and response_text and response_text.strip():
-            if agent_result.get("status") == "success":
-                try:
-                    async with AsyncSessionLocal() as db:
-                        async with db.begin():
-                            new_cache = SummarizationCache(
-                                id=str(uuid.uuid4()),
-                                file_identifier=str(file_identifier),
-                                summary_type=summary_type,
-                                content=response_text,
-                            )
-                            db.add(new_cache)
-                except Exception as db_exc:
-                    logger.error("Ошибка записи кэша: %s", db_exc)
+            try:
+                async with AsyncSessionLocal() as db:
+                    async with db.begin():
+                        new_cache = SummarizationCache(
+                            id=str(uuid.uuid4()),
+                            file_identifier=str(file_identifier),
+                            summary_type=summary_type,
+                            content=response_text,
+                        )
+                        db.add(new_cache)
+            except Exception as db_exc:
+                logger.error("Ошибка записи кэша: %s", db_exc)
 
         if current_path and not is_uuid:
             background_tasks.add_task(_cleanup_file, current_path)
 
         return AssistantResponse(
-            status=agent_result.get("status", "success"),
+            status="success",
             response=response_text or "Анализ завершён.",
             thread_id=new_thread_id,
-            message=agent_result.get("message"),
-            requires_reload=agent_result.get("requires_reload", False),
             metadata={
-                **agent_result.get("metadata", {}),
                 "cache_file_identifier": file_identifier,
                 "cache_summary_type": summary_type,
-                "cache_context_ui_id": user_input.context_ui_id,
                 "from_cache": False,
             },
         )
@@ -483,21 +462,23 @@ async def get_history(
         agent: Annotated[EdmsAgentOrchestrator, Depends(get_agent)],
 ) -> dict:
     try:
-        state = await agent.state_manager.get_state(thread_id)
-        messages = state.values.get("messages", []) if state else []
+        messages = await agent.memory.short.get_messages(thread_id)
 
         filtered = []
         for m in messages:
-            if not isinstance(m, (HumanMessage, AIMessage)):
+            if hasattr(m, 'type'):
+                msg_type = m.type
+                content = m.content
+            elif isinstance(m, dict):
+                msg_type = m.get("role")
+                content = m.get("content")
+            else:
                 continue
-            if isinstance(m, AIMessage) and not m.content:
-                continue
-            filtered.append(
-                {
-                    "type": "human" if isinstance(m, HumanMessage) else "ai",
-                    "content": m.content,
-                }
-            )
+
+            if msg_type == "human":
+                filtered.append({"type": "human", "content": content})
+            elif msg_type == "ai" or msg_type == "assistant":
+                filtered.append({"type": "ai", "content": content})
 
         return {"messages": filtered}
 
@@ -591,10 +572,11 @@ async def rag_rebuild(background_tasks: BackgroundTasks) -> dict:
 async def health_check(
         agent: Annotated[EdmsAgentOrchestrator, Depends(get_agent)],
 ) -> dict:
+    health = await agent.get_health()
     return {
         "status": "ok",
         "version": app.version,
-        "components": agent.health_check(),
+        "components": health,
         "rag": _rag is not None,
         "memory": _memory is not None,
     }

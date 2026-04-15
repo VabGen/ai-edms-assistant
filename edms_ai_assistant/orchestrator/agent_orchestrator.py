@@ -28,6 +28,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from edms_ai_assistant.orchestrator.config import settings
 from memory import MemoryManager, Message, UserProfile
 from nlp_preprocessor import Intent, NLPPreprocessor, NLUResult
 from rag_module import RAGModule
@@ -434,16 +435,20 @@ class EdmsAgentOrchestrator:
         self.prompts = PromptLoader(prompts_dir)
         self.memory = MemoryManager(
             redis_url=self.config.redis_url,
-            pg_dsn=self.config.pg_dsn,
+            postgres_dsn=self.config.pg_dsn,
             max_context_tokens=self.config.max_context_tokens,
         )
-        self.rag = RAGModule(dsn=self.config.pg_dsn)
+        self.rag = RAGModule(
+            postgres_dsn=self.config.pg_dsn,
+            embedding_url=settings.LLM_EMBEDDING_URL,
+            embedding_model=settings.LLM_EMBEDDING_MODEL,
+        )
         self._initialized = False
 
     async def init(self) -> None:
         """Инициализация всех компонентов."""
-        await self.memory.init()
-        await self.rag.init()
+        await self.memory.initialize()
+        await self.rag.initialize()
         self._initialized = True
         logger.info("EdmsAgentOrchestrator initialized")
 
@@ -492,7 +497,7 @@ class EdmsAgentOrchestrator:
             return AgentResponse(**cached)
 
         # ── 1. NLU ────────────────────────────────────────────────────────────
-        nlu_result = self.nlu.preprocess(user_message, ctx)
+        nlu_result = self.nlu.process(user_message, ctx)
         logger.info(
             "NLU: intent=%s confidence=%.2f fast_path=%s",
             nlu_result.intent.value, nlu_result.confidence, nlu_result.can_skip_llm,
