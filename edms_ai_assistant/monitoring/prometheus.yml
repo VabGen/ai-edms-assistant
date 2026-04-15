@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "orchestrator"
+    static_configs:
+      - targets: ["orchestrator:8002"]
+    metrics_path: /metrics
+
+  - job_name: "feedback"
+    static_configs:
+      - targets: ["feedback:8003"]
+    metrics_path: /metrics
+
+  - job_name: "mcp-server"
+    static_configs:
+      - targets: ["mcp-server:8001"]
+    metrics_path: /metrics

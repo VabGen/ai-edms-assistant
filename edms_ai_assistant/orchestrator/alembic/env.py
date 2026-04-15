@@ -24,7 +24,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 try:
-    from edms_ai_assistant.db.database import Base
+    from edms_ai_assistant.orchestrator.db.database import Base
 
     target_metadata = Base.metadata
 except ImportError:

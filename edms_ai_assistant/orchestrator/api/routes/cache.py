@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 
-from edms_ai_assistant.db.database import AsyncSessionLocal, SummarizationCache
+from edms_ai_assistant.orchestrator.db.database import AsyncSessionLocal, SummarizationCache
 
 logger = logging.getLogger(__name__)
 

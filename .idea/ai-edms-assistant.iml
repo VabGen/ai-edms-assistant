@@ -4,7 +4,6 @@
     <content url="file://$MODULE_DIR$">
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
-      <excludeFolder url="file://$MODULE_DIR$/edms_ai_assistant/orchestrator/db" />
       <excludeFolder url="file://$MODULE_DIR$/edms_ai_assistant/orchestrator/utils" />
     </content>
     <orderEntry type="jdk" jdkName="uv (ai-edms-assistant)" jdkType="Python SDK" />

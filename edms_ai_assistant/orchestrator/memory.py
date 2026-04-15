@@ -1,623 +1,600 @@
-# orchestrator/memory.py
 """
-Трёхуровневая система памяти EDMS AI Assistant.
+memory.py — Трёхуровневая система памяти EDMS AI Ассистента.
 
-    ShortTermMemory   — буфер текущего диалога с управлением токенами
-    MediumTermMemory  — Redis TTL-сессии (контекст, задача, state)
-    LongTermMemory    — PostgreSQL профиль, история действий, диалоги
-    MemoryManager     — единый фасад поверх всех трёх уровней
+1. Short-term  (краткосрочная): контекст диалога в памяти, обрезка по токенам
+2. Medium-term (среднесрочная): состояние сессии в Redis с TTL
+3. Long-term   (долгосрочная): профиль пользователя в PostgreSQL (asyncpg)
 
-SQLAlchemy модели:
-    UserProfile      — user_id, preferences(JSONB), created_at, updated_at
-    ConversationLog  — id, user_id, session_id, role, content, tokens, timestamp
-    ActionHistory    — id, user_id, action_type, entity_id, metadata(JSONB), timestamp
+Все операции асинхронные. Падение Redis/DB не блокирует работу ассистента.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+import os
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
+import asyncpg
 import redis.asyncio as aioredis
-from sqlalchemy import (
-    BigInteger,
-    Boolean,
-    DateTime,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-    func,
-    select,
-)
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from edms_ai_assistant.config import settings
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("memory")
 
 
-# ── SQLAlchemy Base и движок ──────────────────────────────────────────────
+# ── Data models ───────────────────────────────────────────────────────────────
+
+@dataclass
+class Message:
+    """Одно сообщение в диалоге."""
+    role: str        # "system" | "user" | "assistant" | "tool"
+    content: str
+    name: str | None = None
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.name:
+            d["name"] = self.name
+        return d
 
 
-class Base(DeclarativeBase):
-    pass
+@dataclass
+class UserProfile:
+    """Профиль пользователя из долгосрочной памяти."""
+    user_id: str
+    first_name: str = ""
+    last_name: str = ""
+    department: str = ""
+    role: str = ""
+    preferred_language: str = "ru"
+    frequent_categories: list[str] = field(default_factory=list)
+    frequent_statuses: list[str] = field(default_factory=list)
+    favorite_filters: dict[str, Any] = field(default_factory=dict)
+    total_requests: int = 0
+    last_active_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
 
-_engine = create_async_engine(
-    settings.DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-)
-_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
-    bind=_engine,
-    expire_on_commit=False,
-    autoflush=False,
-)
+@dataclass
+class SessionState:
+    """Состояние текущей сессии."""
+    user_id: str
+    session_id: str
+    active_document_id: str | None = None
+    active_document_title: str | None = None
+    current_task: str | None = None
+    pending_confirmation: dict[str, Any] | None = None
+    context: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "active_document_id": self.active_document_id,
+            "active_document_title": self.active_document_title,
+            "current_task": self.current_task,
+            "pending_confirmation": self.pending_confirmation,
+            "context": self.context,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SessionState:
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
-# ── ORM-модели ────────────────────────────────────────────────────────────
-
-
-class UserProfile(Base):
-    """Долгосрочный профиль пользователя."""
-
-    __tablename__ = "user_profiles"
-    __table_args__ = {"schema": "edms"}
-
-    user_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    display_name: Mapped[str | None] = mapped_column(String(500))
-    email: Mapped[str | None] = mapped_column(String(500))
-    department: Mapped[str | None] = mapped_column(String(500))
-    role_in_org: Mapped[str | None] = mapped_column(String(255))
-    preferences: Mapped[dict[str, Any]] = mapped_column(
-        JSONB(astext_type=Text()), nullable=False, server_default="{}"
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    conversation_logs: Mapped[list[ConversationLog]] = relationship(
-        "ConversationLog", back_populates="user", lazy="raise"
-    )
-    action_history: Mapped[list[ActionHistory]] = relationship(
-        "ActionHistory", back_populates="user", lazy="raise"
-    )
-
-
-class ConversationLog(Base):
-    """Журнал сообщений диалогов."""
-
-    __tablename__ = "conversation_logs"
-    __table_args__ = {"schema": "edms"}
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String(255),
-        ForeignKey("edms.user_profiles.user_id", ondelete="CASCADE"),
-        index=True,
-    )
-    session_id: Mapped[str] = mapped_column(String(255), index=True)
-    role: Mapped[str] = mapped_column(String(50))
-    content: Mapped[str] = mapped_column(Text)
-    tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    tool_name: Mapped[str | None] = mapped_column(String(255))
-    tool_result: Mapped[dict[str, Any] | None] = mapped_column(
-        JSONB(astext_type=Text())
-    )
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
-    )
-
-    user: Mapped[UserProfile] = relationship(
-        "UserProfile", back_populates="conversation_logs"
-    )
-
-
-class ActionHistory(Base):
-    """История действий пользователя в EDMS через ИИ."""
-
-    __tablename__ = "action_history"
-    __table_args__ = {"schema": "edms"}
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String(255),
-        ForeignKey("edms.user_profiles.user_id", ondelete="CASCADE"),
-        index=True,
-    )
-    action_type: Mapped[str] = mapped_column(String(255), index=True)
-    entity_id: Mapped[str | None] = mapped_column(String(255))
-    action_metadata: Mapped[dict[str, Any]] = mapped_column(
-        JSONB(astext_type=Text()), nullable=False, server_default="{}"
-    )
-    success: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
-    )
-
-    user: Mapped[UserProfile] = relationship(
-        "UserProfile", back_populates="action_history"
-    )
-
-
-# ── ShortTermMemory ───────────────────────────────────────────────────────
-
+# ── Short-term memory ─────────────────────────────────────────────────────────
 
 class ShortTermMemory:
     """
-    Краткосрочная память: буфер сообщений текущего диалога.
+    Краткосрочная память: контекст текущего диалога.
 
-    Автоматически обрезает старые сообщения при превышении max_tokens,
-    сохраняя системное сообщение и последние N обменов.
+    Хранит список сообщений в памяти процесса.
+    Автоматически обрезает старые сообщения при превышении лимита токенов.
     """
 
     def __init__(self, max_tokens: int = 8000) -> None:
         self.max_tokens = max_tokens
-        self._messages: list[dict[str, Any]] = []
-        self._total_tokens: int = 0
+        self._messages: list[Message] = []
 
-    @staticmethod
-    def count_tokens(text: str) -> int:
-        """Приблизительный подсчёт токенов: 1 токен ≈ 4 символа."""
-        return max(1, len(str(text)) // 4)
+    def add(self, role: str, content: str, name: str | None = None) -> None:
+        """Добавить сообщение в контекст."""
+        self._messages.append(Message(role=role, content=content, name=name))
+        self._trim()
+        logger.debug(
+            "Short-term: added %s message, total=%d ~%d tokens",
+            role, len(self._messages), self.token_count(),
+        )
 
-    def add_message(
-        self,
-        role: str,
-        content: str,
-        tool_name: str | None = None,
-        tool_result: dict[str, Any] | None = None,
-    ) -> None:
-        """
-        Добавляет сообщение в буфер с автообрезкой по токенам.
-
-        Args:
-            role:        user | assistant | system | tool
-            content:     Текст сообщения.
-            tool_name:   Имя инструмента (для role=tool).
-            tool_result: Результат инструмента.
-        """
-        tokens = self.count_tokens(content)
-        msg: dict[str, Any] = {
-            "role": role,
-            "content": content,
-            "tokens": tokens,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        if tool_name:
-            msg["tool_name"] = tool_name
-        if tool_result is not None:
-            msg["tool_result"] = tool_result
-
-        self._messages.append(msg)
-        self._total_tokens += tokens
-        self._trim_if_needed()
-
-    def _trim_if_needed(self) -> None:
-        """
-        Обрезает буфер если превышен лимит токенов.
-
-        Сохраняет: system-сообщения + последние 2 обмена (4 сообщения).
-        Удаляет: самые старые не-system сообщения.
-        """
-        if self._total_tokens <= self.max_tokens:
-            return
-
-        system_msgs = [m for m in self._messages if m["role"] == "system"]
-        non_system = [m for m in self._messages if m["role"] != "system"]
-
-        # Удаляем старые не-system сообщения, оставляем минимум 4
-        while self._total_tokens > self.max_tokens and len(non_system) > 4:
-            removed = non_system.pop(0)
-            self._total_tokens -= removed["tokens"]
-
-        self._messages = system_msgs + non_system
-
-    def get_context(self) -> list[dict[str, Any]]:
-        """Возвращает контекст без внутренних полей (tokens, timestamp)."""
-        return [
-            {k: v for k, v in msg.items() if k not in ("tokens", "timestamp")}
-            for msg in self._messages
-        ]
-
-    def get_messages_for_llm(self) -> list[dict[str, str]]:
-        """Возвращает сообщения в формате Anthropic/OpenAI API."""
-        return [{"role": m["role"], "content": m["content"]} for m in self._messages]
+    def get_messages(self) -> list[dict[str, Any]]:
+        """Получить все сообщения для передачи в LLM."""
+        return [m.to_dict() for m in self._messages]
 
     def clear(self) -> None:
-        """Очищает буфер."""
-        self._messages.clear()
-        self._total_tokens = 0
+        """Очистить контекст диалога."""
+        self._messages = []
 
     @property
-    def total_tokens(self) -> int:
-        return self._total_tokens
+    def token_count(self) -> int:
+        """Приблизительный подсчёт токенов (4 символа ≈ 1 токен)."""
+        total_chars = sum(len(m.content) for m in self._messages)
+        return total_chars // 4
 
-    @property
-    def message_count(self) -> int:
+    def _trim(self) -> None:
+        """Обрезать старые сообщения, сохраняя системное и последние сообщения."""
+        while self.token_count > self.max_tokens and len(self._messages) > 2:
+            # Находим первое не-системное сообщение и удаляем
+            for i, msg in enumerate(self._messages):
+                if msg.role != "system":
+                    self._messages.pop(i)
+                    break
+            else:
+                break
+        logger.debug("Short-term trimmed: %d messages, ~%d tokens", len(self._messages), self.token_count)
+
+    def __len__(self) -> int:
         return len(self._messages)
 
 
-# ── MediumTermMemory ──────────────────────────────────────────────────────
-
+# ── Medium-term memory (Redis) ────────────────────────────────────────────────
 
 class MediumTermMemory:
     """
-    Среднесрочная память: Redis TTL-сессии.
+    Среднесрочная память: состояние сессии в Redis.
 
-    Хранит текущий контекст: активный документ, задача, состояние диалога.
-    Все значения сериализуются в JSON.
+    TTL: 2 часа по умолчанию. При каждом обновлении TTL сбрасывается.
     """
 
-    def __init__(
-        self,
-        redis_url: str | None = None,
-        session_ttl: int = 3600,
-    ) -> None:
-        self._redis_url = redis_url or settings.REDIS_URL
-        self.session_ttl = session_ttl
-        self._client: aioredis.Redis | None = None
+    DEFAULT_TTL = 7200  # 2 часа
 
-    async def _get_client(self) -> aioredis.Redis:
-        """Возвращает Redis-клиент (ленивая инициализация)."""
+    def __init__(self, redis_url: str, ttl: int = DEFAULT_TTL) -> None:
+        self._redis_url = redis_url
+        self._ttl = ttl
+        self._client: aioredis.Redis | None = None
+        self._fallback: dict[str, Any] = {}  # in-memory fallback при недоступности Redis
+
+    async def _get_client(self) -> aioredis.Redis | None:
         if self._client is None:
-            self._client = aioredis.from_url(
-                self._redis_url,
-                encoding="utf-8",
-                decode_responses=True,
-            )
+            try:
+                self._client = aioredis.from_url(
+                    self._redis_url, encoding="utf-8", decode_responses=True
+                )
+                await self._client.ping()
+            except Exception as exc:
+                logger.warning("Redis unavailable: %s — using in-memory fallback", exc)
+                self._client = None
         return self._client
 
-    def _key(self, session_id: str, key: str) -> str:
-        return f"edms:session:{session_id}:{key}"
-
-    async def get(self, session_id: str, key: str) -> Any | None:
-        """Возвращает значение из сессии или None."""
+    async def get_session(self, session_id: str) -> SessionState | None:
+        """Получить состояние сессии."""
+        client = await self._get_client()
+        key = f"session:{session_id}"
         try:
-            client = await self._get_client()
-            raw = await client.get(self._key(session_id, key))
-            if raw is None:
-                return None
-            return json.loads(raw)
+            if client:
+                raw = await client.get(key)
+                if raw:
+                    data = json.loads(raw)
+                    return SessionState.from_dict(data)
+            else:
+                raw = self._fallback.get(key)
+                if raw:
+                    return SessionState.from_dict(raw)
         except Exception as exc:
-            logger.warning("MediumTermMemory.get error: %s", exc)
+            logger.error("Medium-term get_session error: %s", exc)
+        return None
+
+    async def save_session(self, state: SessionState) -> None:
+        """Сохранить состояние сессии."""
+        client = await self._get_client()
+        key = f"session:{state.session_id}"
+        try:
+            data = state.to_dict()
+            if client:
+                await client.setex(key, self._ttl, json.dumps(data))
+            else:
+                self._fallback[key] = data
+        except Exception as exc:
+            logger.error("Medium-term save_session error: %s", exc)
+
+    async def cache_get(self, cache_key: str) -> Any | None:
+        """Получить кэшированный результат."""
+        client = await self._get_client()
+        key = f"cache:{cache_key}"
+        try:
+            if client:
+                raw = await client.get(key)
+                return json.loads(raw) if raw else None
+            return self._fallback.get(key)
+        except Exception as exc:
+            logger.error("Medium-term cache_get error: %s", exc)
             return None
 
-    async def set(
-        self,
-        session_id: str,
-        key: str,
-        value: Any,
-        ttl: int | None = None,
-    ) -> None:
-        """Сохраняет значение в сессии с TTL."""
+    async def cache_set(self, cache_key: str, value: Any, ttl: int = 300) -> None:
+        """Кэшировать результат с TTL."""
+        client = await self._get_client()
+        key = f"cache:{cache_key}"
         try:
-            client = await self._get_client()
-            effective_ttl = ttl if ttl is not None else self.session_ttl
-            serialized = json.dumps(value, ensure_ascii=False, default=str)
-            await client.setex(self._key(session_id, key), effective_ttl, serialized)
+            if client:
+                await client.setex(key, ttl, json.dumps(value, default=str))
+            else:
+                self._fallback[key] = value
         except Exception as exc:
-            logger.warning("MediumTermMemory.set error: %s", exc)
+            logger.error("Medium-term cache_set error: %s", exc)
 
-    async def get_full_session(self, session_id: str) -> dict[str, Any]:
-        """Возвращает все данные сессии."""
+    async def delete_session(self, session_id: str) -> None:
+        """Удалить сессию."""
+        client = await self._get_client()
+        key = f"session:{session_id}"
         try:
-            client = await self._get_client()
-            pattern = self._key(session_id, "*")
-            keys = await client.keys(pattern)
-            if not keys:
-                return {}
-            prefix = self._key(session_id, "")
-            result: dict[str, Any] = {}
-            for full_key in keys:
-                short_key = full_key.removeprefix(prefix)
-                raw = await client.get(full_key)
-                if raw:
-                    try:
-                        result[short_key] = json.loads(raw)
-                    except json.JSONDecodeError:
-                        result[short_key] = raw
-            return result
+            if client:
+                await client.delete(key)
+            else:
+                self._fallback.pop(key, None)
         except Exception as exc:
-            logger.warning("MediumTermMemory.get_full_session error: %s", exc)
-            return {}
-
-    async def clear(self, session_id: str) -> None:
-        """Очищает все данные сессии."""
-        try:
-            client = await self._get_client()
-            pattern = self._key(session_id, "*")
-            keys = await client.keys(pattern)
-            if keys:
-                await client.delete(*keys)
-        except Exception as exc:
-            logger.warning("MediumTermMemory.clear error: %s", exc)
-
-    async def close(self) -> None:
-        """Закрывает Redis-соединение."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+            logger.error("Medium-term delete_session error: %s", exc)
 
 
-# ── LongTermMemory ────────────────────────────────────────────────────────
-
+# ── Long-term memory (PostgreSQL via asyncpg) ─────────────────────────────────
 
 class LongTermMemory:
     """
-    Долгосрочная память: PostgreSQL.
+    Долгосрочная память: профили пользователей в PostgreSQL.
 
-    Профили пользователей, история действий, журнал диалогов.
+    Использует asyncpg напрямую для максимальной производительности.
+    Schema: edms_ai.user_profiles, edms_ai.dialog_logs
     """
 
-    async def get_profile(self, user_id: str) -> UserProfile | None:
-        """Возвращает профиль пользователя или None."""
-        async with _session_factory() as session:
-            result = await session.execute(
-                select(UserProfile).where(UserProfile.user_id == user_id)
-            )
-            return result.scalar_one_or_none()
+    SCHEMA = """
+    CREATE SCHEMA IF NOT EXISTS edms_ai;
 
-    async def upsert_profile(
-        self,
-        user_id: str,
-        preferences_update: dict[str, Any],
-        display_name: str | None = None,
-        email: str | None = None,
-        department: str | None = None,
-        role_in_org: str | None = None,
-    ) -> UserProfile:
-        """Создаёт или обновляет профиль пользователя."""
-        async with _session_factory() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(UserProfile).where(UserProfile.user_id == user_id)
+    CREATE TABLE IF NOT EXISTS edms_ai.user_profiles (
+        user_id TEXT PRIMARY KEY,
+        first_name TEXT DEFAULT '',
+        last_name TEXT DEFAULT '',
+        department TEXT DEFAULT '',
+        role TEXT DEFAULT '',
+        preferred_language TEXT DEFAULT 'ru',
+        frequent_categories TEXT[] DEFAULT '{}',
+        frequent_statuses TEXT[] DEFAULT '{}',
+        favorite_filters JSONB DEFAULT '{}',
+        total_requests INTEGER DEFAULT 0,
+        last_active_at TIMESTAMPTZ DEFAULT NOW(),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        custom_settings JSONB DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS edms_ai.dialog_logs (
+        id BIGSERIAL PRIMARY KEY,
+        dialog_id UUID DEFAULT gen_random_uuid() UNIQUE NOT NULL,
+        user_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        user_query TEXT NOT NULL,
+        normalized_query TEXT,
+        intent TEXT,
+        entities JSONB DEFAULT '{}',
+        confidence FLOAT DEFAULT 0.0,
+        selected_tool TEXT,
+        tool_args JSONB DEFAULT '{}',
+        tool_results JSONB DEFAULT '[]',
+        agent_mode TEXT DEFAULT 'react',
+        model_used TEXT DEFAULT '',
+        final_response TEXT,
+        latency_ms INTEGER DEFAULT 0,
+        user_feedback SMALLINT,
+        feedback_comment TEXT,
+        feedback_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dialog_logs_user_id ON edms_ai.dialog_logs(user_id);
+    CREATE INDEX IF NOT EXISTS idx_dialog_logs_session_id ON edms_ai.dialog_logs(session_id);
+    CREATE INDEX IF NOT EXISTS idx_dialog_logs_intent ON edms_ai.dialog_logs(intent);
+    CREATE INDEX IF NOT EXISTS idx_dialog_logs_feedback
+        ON edms_ai.dialog_logs(user_feedback) WHERE user_feedback IS NOT NULL;
+    """
+
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+        self._pool: asyncpg.Pool | None = None
+
+    async def initialize(self) -> None:
+        """Инициализировать пул соединений и создать схему."""
+        try:
+            self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
+            async with self._pool.acquire() as conn:
+                await conn.execute(self.SCHEMA)
+            logger.info("LongTermMemory: PostgreSQL pool initialized")
+        except Exception as exc:
+            logger.error("LongTermMemory init failed: %s", exc)
+            self._pool = None
+
+    async def close(self) -> None:
+        if self._pool:
+            await self._pool.close()
+
+    async def get_user_profile(self, user_id: str) -> UserProfile:
+        """Получить профиль пользователя (создать если не существует)."""
+        if not self._pool:
+            return UserProfile(user_id=user_id)
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT * FROM edms_ai.user_profiles WHERE user_id = $1",
+                    user_id,
                 )
-                profile = result.scalar_one_or_none()
-
-                if profile is None:
-                    profile = UserProfile(
-                        user_id=user_id,
-                        preferences=preferences_update,
-                        display_name=display_name,
-                        email=email,
-                        department=department,
-                        role_in_org=role_in_org,
+                if not row:
+                    await conn.execute(
+                        "INSERT INTO edms_ai.user_profiles (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
+                        user_id,
                     )
-                    session.add(profile)
-                else:
-                    profile.preferences = {
-                        **(profile.preferences or {}),
-                        **preferences_update,
-                    }
-                    if display_name is not None:
-                        profile.display_name = display_name
-                    if email is not None:
-                        profile.email = email
-                    if department is not None:
-                        profile.department = department
-                    if role_in_org is not None:
-                        profile.role_in_org = role_in_org
-
-                await session.flush()
-                await session.refresh(profile)
-                return profile
-
-    async def log_action(
-        self,
-        user_id: str,
-        action_type: str,
-        entity_id: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        success: bool = True,
-    ) -> ActionHistory:
-        """Записывает действие пользователя в историю."""
-        async with _session_factory() as session:
-            async with session.begin():
-                # Гарантируем профиль
-                p_result = await session.execute(
-                    select(UserProfile).where(UserProfile.user_id == user_id)
+                    return UserProfile(user_id=user_id)
+                return UserProfile(
+                    user_id=row["user_id"],
+                    first_name=row["first_name"] or "",
+                    last_name=row["last_name"] or "",
+                    department=row["department"] or "",
+                    role=row["role"] or "",
+                    preferred_language=row["preferred_language"] or "ru",
+                    frequent_categories=list(row["frequent_categories"] or []),
+                    frequent_statuses=list(row["frequent_statuses"] or []),
+                    favorite_filters=dict(row["favorite_filters"] or {}),
+                    total_requests=row["total_requests"] or 0,
                 )
-                if p_result.scalar_one_or_none() is None:
-                    session.add(UserProfile(user_id=user_id, preferences={}))
-                    await session.flush()
+        except Exception as exc:
+            logger.error("LongTermMemory get_user_profile error: %s", exc)
+            return UserProfile(user_id=user_id)
 
-                action = ActionHistory(
-                    user_id=user_id,
-                    action_type=action_type,
-                    entity_id=entity_id,
-                    action_metadata=metadata or {},
-                    success=success,
+    async def update_user_profile(self, profile: UserProfile) -> None:
+        """Обновить профиль пользователя."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO edms_ai.user_profiles
+                        (user_id, first_name, last_name, department, role,
+                         preferred_language, frequent_categories, frequent_statuses,
+                         favorite_filters, total_requests, last_active_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        first_name = EXCLUDED.first_name,
+                        last_name = EXCLUDED.last_name,
+                        department = EXCLUDED.department,
+                        role = EXCLUDED.role,
+                        preferred_language = EXCLUDED.preferred_language,
+                        frequent_categories = EXCLUDED.frequent_categories,
+                        frequent_statuses = EXCLUDED.frequent_statuses,
+                        favorite_filters = EXCLUDED.favorite_filters,
+                        total_requests = EXCLUDED.total_requests,
+                        last_active_at = NOW()
+                    """,
+                    profile.user_id, profile.first_name, profile.last_name,
+                    profile.department, profile.role, profile.preferred_language,
+                    profile.frequent_categories, profile.frequent_statuses,
+                    json.dumps(profile.favorite_filters), profile.total_requests,
                 )
-                session.add(action)
-                await session.flush()
-                await session.refresh(action)
-                return action
+        except Exception as exc:
+            logger.error("LongTermMemory update_user_profile error: %s", exc)
 
-    async def get_recent_actions(
+    async def log_dialog(
         self,
-        user_id: str,
-        limit: int = 20,
-        action_type: str | None = None,
-    ) -> list[ActionHistory]:
-        """Возвращает последние действия пользователя."""
-        async with _session_factory() as session:
-            stmt = (
-                select(ActionHistory)
-                .where(ActionHistory.user_id == user_id)
-                .order_by(ActionHistory.timestamp.desc())
-                .limit(limit)
-            )
-            if action_type:
-                stmt = stmt.where(ActionHistory.action_type == action_type)
-            result = await session.execute(stmt)
-            return list(result.scalars().all())
-
-    async def save_conversation_message(
-        self,
+        *,
         user_id: str,
         session_id: str,
-        role: str,
-        content: str,
-        tokens: int = 0,
-        tool_name: str | None = None,
-        tool_result: dict[str, Any] | None = None,
-    ) -> ConversationLog:
-        """Сохраняет сообщение диалога в долгосрочную память."""
-        async with _session_factory() as session:
-            async with session.begin():
-                p_result = await session.execute(
-                    select(UserProfile).where(UserProfile.user_id == user_id)
+        user_query: str,
+        normalized_query: str = "",
+        intent: str = "",
+        entities: dict | None = None,
+        confidence: float = 0.0,
+        selected_tool: str = "",
+        tool_args: dict | None = None,
+        tool_results: list | None = None,
+        agent_mode: str = "react",
+        model_used: str = "",
+        final_response: str = "",
+        latency_ms: int = 0,
+    ) -> str:
+        """Записать лог диалога, вернуть dialog_id."""
+        if not self._pool:
+            import uuid
+            return str(uuid.uuid4())
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO edms_ai.dialog_logs
+                        (user_id, session_id, user_query, normalized_query, intent,
+                         entities, confidence, selected_tool, tool_args, tool_results,
+                         agent_mode, model_used, final_response, latency_ms)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                    RETURNING dialog_id::text
+                    """,
+                    user_id, session_id, user_query, normalized_query, intent,
+                    json.dumps(entities or {}), confidence, selected_tool,
+                    json.dumps(tool_args or {}), json.dumps(tool_results or []),
+                    agent_mode, model_used, final_response, latency_ms,
                 )
-                if p_result.scalar_one_or_none() is None:
-                    session.add(UserProfile(user_id=user_id, preferences={}))
-                    await session.flush()
+                return row["dialog_id"] if row else ""
+        except Exception as exc:
+            logger.error("LongTermMemory log_dialog error: %s", exc)
+            import uuid
+            return str(uuid.uuid4())
 
-                log_entry = ConversationLog(
-                    user_id=user_id,
-                    session_id=session_id,
-                    role=role,
-                    content=content,
-                    tokens=tokens,
-                    tool_name=tool_name,
-                    tool_result=tool_result,
+    async def update_feedback(
+        self, dialog_id: str, rating: int, comment: str = ""
+    ) -> bool:
+        """Обновить оценку пользователя для диалога."""
+        if not self._pool:
+            return False
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE edms_ai.dialog_logs
+                    SET user_feedback = $1, feedback_comment = $2, feedback_at = NOW()
+                    WHERE dialog_id = $3::uuid
+                    """,
+                    rating, comment, dialog_id,
                 )
-                session.add(log_entry)
-                await session.flush()
-                await session.refresh(log_entry)
-                return log_entry
+            return True
+        except Exception as exc:
+            logger.error("LongTermMemory update_feedback error: %s", exc)
+            return False
+
+    async def get_positive_dialogs(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Получить диалоги с положительной оценкой для RAG."""
+        if not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT user_query, normalized_query, intent, selected_tool,
+                           tool_args, final_response, user_feedback
+                    FROM edms_ai.dialog_logs
+                    WHERE user_feedback = 1
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            logger.error("LongTermMemory get_positive_dialogs error: %s", exc)
+            return []
+
+    async def get_negative_dialogs(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Получить диалоги с отрицательной оценкой для анти-примеров."""
+        if not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT user_query, intent, selected_tool, final_response,
+                           feedback_comment, created_at
+                    FROM edms_ai.dialog_logs
+                    WHERE user_feedback = -1
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            logger.error("LongTermMemory get_negative_dialogs error: %s", exc)
+            return []
 
 
-# ── MemoryManager ─────────────────────────────────────────────────────────
-
+# ── MemoryManager — façade ────────────────────────────────────────────────────
 
 class MemoryManager:
     """
-    Единый фасад поверх трёх уровней памяти.
+    Фасад для работы с трёхуровневой памятью.
 
-    Использование:
-        manager = MemoryManager()
-        context = await manager.build_context_for_prompt(user_id, session_id)
-        await manager.record_exchange(user_id, session_id, user_msg, ai_msg)
+    Объединяет ShortTermMemory, MediumTermMemory, LongTermMemory.
+    Подмешивает профиль пользователя и состояние сессии в системный промпт.
     """
 
     def __init__(
         self,
-        max_tokens: int = 8000,
-        redis_url: str | None = None,
-        session_ttl: int = 3600,
+        redis_url: str,
+        postgres_dsn: str,
+        max_context_tokens: int = 8000,
+        session_ttl: int = 7200,
     ) -> None:
-        self.short = ShortTermMemory(max_tokens=max_tokens)
-        self.medium = MediumTermMemory(
-            redis_url=redis_url or settings.REDIS_URL,
-            session_ttl=session_ttl,
-        )
-        self.long = LongTermMemory()
+        self.short = ShortTermMemory(max_tokens=max_context_tokens)
+        self.medium = MediumTermMemory(redis_url=redis_url, ttl=session_ttl)
+        self.long = LongTermMemory(dsn=postgres_dsn)
 
-    async def build_context_for_prompt(
-        self,
-        user_id: str,
-        session_id: str,
-    ) -> dict[str, Any]:
-        """
-        Собирает контекст из всех уровней памяти для промпта.
-
-        Returns:
-            Dict с ключами: user_profile, session_state,
-            short_term_messages, recent_actions.
-        """
-        profile_task = asyncio.create_task(self.long.get_profile(user_id))
-        session_task = asyncio.create_task(self.medium.get_full_session(session_id))
-        actions_task = asyncio.create_task(
-            self.long.get_recent_actions(user_id, limit=10)
-        )
-
-        profile, session_state, recent_actions = await asyncio.gather(
-            profile_task, session_task, actions_task, return_exceptions=True
-        )
-
-        profile_data: dict[str, Any] = {}
-        if isinstance(profile, UserProfile):
-            profile_data = {
-                "user_id": profile.user_id,
-                "display_name": profile.display_name,
-                "department": profile.department,
-                "role_in_org": profile.role_in_org,
-                "preferences": profile.preferences or {},
-            }
-
-        actions_data: list[dict[str, Any]] = []
-        if isinstance(recent_actions, list):
-            actions_data = [
-                {
-                    "action_type": a.action_type,
-                    "entity_id": a.entity_id,
-                    "success": a.success,
-                    "timestamp": a.timestamp.isoformat() if a.timestamp else None,
-                }
-                for a in recent_actions
-            ]
-
-        return {
-            "user_profile": profile_data,
-            "session_state": session_state if isinstance(session_state, dict) else {},
-            "short_term_messages": self.short.get_context(),
-            "recent_actions": actions_data,
-        }
-
-    async def record_exchange(
-        self,
-        user_id: str,
-        session_id: str,
-        user_message: str,
-        assistant_message: str,
-        tool_calls: list[dict[str, Any]] | None = None,
-    ) -> None:
-        """
-        Записывает обмен (запрос + ответ) во все уровни памяти.
-
-        Не блокирует — долгосрочное сохранение идёт в фоне через gather.
-        """
-        self.short.add_message("user", user_message)
-        self.short.add_message("assistant", assistant_message)
-
-        user_tokens = self.short.count_tokens(user_message)
-        assistant_tokens = self.short.count_tokens(assistant_message)
-
-        save_tasks = [
-            asyncio.create_task(
-                self.long.save_conversation_message(
-                    user_id=user_id,
-                    session_id=session_id,
-                    role="user",
-                    content=user_message,
-                    tokens=user_tokens,
-                )
-            ),
-            asyncio.create_task(
-                self.long.save_conversation_message(
-                    user_id=user_id,
-                    session_id=session_id,
-                    role="assistant",
-                    content=assistant_message,
-                    tokens=assistant_tokens,
-                )
-            ),
-        ]
-        # Не ждём — не блокируем ответ пользователю
-        await asyncio.gather(*save_tasks, return_exceptions=True)
+    async def initialize(self) -> None:
+        await self.long.initialize()
+        logger.info("MemoryManager initialized")
 
     async def close(self) -> None:
-        """Освобождает ресурсы."""
-        await self.medium.close()
-        await _engine.dispose()
+        await self.long.close()
+
+    async def get_user_profile(self, user_id: str) -> UserProfile:
+        return await self.long.get_user_profile(user_id)
+
+    async def get_or_create_session(
+        self, user_id: str, session_id: str
+    ) -> SessionState:
+        state = await self.medium.get_session(session_id)
+        if not state:
+            state = SessionState(user_id=user_id, session_id=session_id)
+            await self.medium.save_session(state)
+        return state
+
+    async def build_system_context(
+        self,
+        user_id: str,
+        session_id: str,
+        base_prompt: str,
+        rag_examples: str = "",
+        anti_examples: str = "",
+    ) -> str:
+        """
+        Формирует системный промпт с учётом профиля пользователя и сессии.
+        """
+        profile = await self.get_user_profile(user_id)
+        session = await self.get_or_create_session(user_id, session_id)
+
+        blocks: list[str] = [base_prompt]
+
+        # Профиль пользователя
+        profile_block = _build_profile_block(profile)
+        if profile_block:
+            blocks.append(profile_block)
+
+        # Состояние сессии
+        session_block = _build_session_block(session)
+        if session_block:
+            blocks.append(session_block)
+
+        # RAG few-shot
+        if rag_examples:
+            blocks.append(f"\n<few_shot_examples>\n{rag_examples}\n</few_shot_examples>")
+
+        # Анти-примеры
+        if anti_examples:
+            blocks.append(f"\n<anti_examples>\n{anti_examples}\n</anti_examples>")
+
+        return "\n".join(blocks)
+
+    async def log_dialog(self, **kwargs) -> str:
+        return await self.long.log_dialog(**kwargs)
+
+    async def update_feedback(self, dialog_id: str, rating: int, comment: str = "") -> bool:
+        return await self.long.update_feedback(dialog_id, rating, comment)
+
+
+def _build_profile_block(profile: UserProfile) -> str:
+    lines: list[str] = []
+    name_parts = [p for p in [profile.last_name, profile.first_name] if p]
+    if name_parts:
+        lines.append(f"Пользователь: {' '.join(name_parts)}")
+    if profile.department:
+        lines.append(f"Отдел: {profile.department}")
+    if profile.role:
+        lines.append(f"Роль: {profile.role}")
+    if profile.frequent_categories:
+        lines.append(f"Часто работает с категориями: {', '.join(profile.frequent_categories[:3])}")
+    if profile.total_requests:
+        lines.append(f"Опытный пользователь ({profile.total_requests} запросов)")
+    if not lines:
+        return ""
+    return "\n<user_profile>\n" + "\n".join(lines) + "\n</user_profile>"
+
+
+def _build_session_block(session: SessionState) -> str:
+    lines: list[str] = []
+    if session.active_document_id:
+        title = session.active_document_title or session.active_document_id
+        lines.append(f"Активный документ: {title}")
+    if session.current_task:
+        lines.append(f"Текущая задача: {session.current_task}")
+    if not lines:
+        return ""
+    return "\n<session_context>\n" + "\n".join(lines) + "\n</session_context>"

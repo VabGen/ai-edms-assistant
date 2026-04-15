@@ -1,317 +1,148 @@
 version: "3.9"
 
-networks:
-  edms-network:
-    driver: bridge
-
-volumes:
-  pgdata:
-  redisdata:
-  qdrantdata:
-  grafanadata:
-  prometheusdata:
-  ollamadata:
-
 services:
 
-  # ── PostgreSQL ──────────────────────────────────────────────────────────
   postgres:
-    image: postgres:18-alpine
-    container_name: edms-postgres
-    restart: unless-stopped
+    image: pgvector/pgvector:pg16
+    container_name: edms_ai_postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-edms}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1234}
-      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_USER: ${POSTGRES_USER:-edms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edms_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-edms_ai}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-edms}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-edms} -d ${POSTGRES_DB:-edms_ai}"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 30s
-    networks:
-      - edms-network
+      retries: 10
+    restart: unless-stopped
 
-  # ── Redis ───────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    container_name: edms-redis
-    restart: unless-stopped
-    command: >
-      redis-server
-      --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
-      --save 60 1000
+    container_name: edms_ai_redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
-      - redisdata:/data
+      - redis_data:/data
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 5
-      start_period: 10s
-    networks:
-      - edms-network
-
-  # ── Qdrant ──────────────────────────────────────────────────────────────
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: edms-qdrant
     restart: unless-stopped
-    volumes:
-      - qdrantdata:/qdrant/storage
+
+  mcp-server:
+    build: ./mcp-server
+    container_name: edms_mcp_server
+    environment:
+      EDMS_API_URL: ${EDMS_API_URL:-http://host.docker.internal:8098}
+      EDMS_API_KEY: ${EDMS_API_KEY:-}
+      EDMS_TIMEOUT: ${EDMS_TIMEOUT:-30}
+      MCP_HTTP_PORT: 8001
     ports:
-      - "${QDRANT_PORT:-6333}:6333"
+      - "8001:8001"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 20s
-    networks:
-      - edms-network
-
-  # ── Ollama ──────────────────────────────────────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    container_name: edms-ollama
     restart: unless-stopped
-    volumes:
-      - ollamadata:/root/.ollama
+
+  orchestrator:
+    build: ./orchestrator
+    container_name: edms_orchestrator
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mcp-server:
+        condition: service_healthy
+    environment:
+      # LLM
+      LLM_LIGHT_URL: ${LLM_LIGHT_URL:-http://host.docker.internal:11434/v1}
+      LLM_LIGHT_MODEL: ${LLM_LIGHT_MODEL:-llama3.2:3b}
+      LLM_HEAVY_URL: ${LLM_HEAVY_URL:-http://host.docker.internal:11434/v1}
+      LLM_HEAVY_MODEL: ${LLM_HEAVY_MODEL:-gpt-oss:120b-cloud}
+      LLM_API_KEY: ${LLM_API_KEY:-ollama}
+      LLM_EMBEDDING_URL: ${LLM_EMBEDDING_URL:-http://host.docker.internal:11434}
+      LLM_EMBEDDING_MODEL: ${LLM_EMBEDDING_MODEL:-nomic-embed-text}
+      # MCP
+      MCP_SERVER_URL: http://mcp-server:8001
+      # DB
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-edms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edms_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-edms_ai}
+      POSTGRES_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+      # App
+      API_PORT: 8002
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      COMPLEXITY_THRESHOLD: ${COMPLEXITY_THRESHOLD:-0.7}
     ports:
-      - "11434:11434"
+      - "8002:8002"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:11434/api/version || exit 1"]
-      interval: 15s
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
       timeout: 10s
       retries: 5
       start_period: 60s
-    networks:
-      - edms-network
-
-  # ── Orchestrator (включает MCP и всё приложение) ────────────────────────
-  # Монорепо: один образ, разные точки запуска
-  orchestrator:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: edms-orchestrator
     restart: unless-stopped
-    command: >
-      sh -c "
-        python -m alembic -c edms_ai_assistant/orchestrator/alembic.ini upgrade head &&
-        uvicorn edms_ai_assistant.orchestrator.main:app
-          --host 0.0.0.0
-          --port ${API_PORT:-8000}
-          --workers ${ORCHESTRATOR_WORKERS:-1}
-          --log-level info
-          --no-access-log
-      "
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-      ollama:
-        condition: service_healthy
-    environment:
-      # ── LLM ─────────────────────────────────────────────────────────
-      OLLAMA_BASE_URL: http://ollama:11434
-      MODEL_NAME: ${MODEL_NAME:-gpt-oss:120b-cloud}
-      MODEL_PLANNER: ${MODEL_PLANNER:-gpt-oss:120b-cloud}
-      MODEL_RESEARCHER: ${MODEL_RESEARCHER:-gpt-oss:120b-cloud}
-      MODEL_EXECUTOR: ${MODEL_EXECUTOR:-gpt-oss:120b-cloud}
-      MODEL_REVIEWER: ${MODEL_REVIEWER:-gpt-oss:120b-cloud}
-      MODEL_EXPLAINER: ${MODEL_EXPLAINER:-gpt-oss:120b-cloud}
-      LLM_GENERATIVE_URL: http://ollama:11434
-      LLM_GENERATIVE_MODEL: ${MODEL_NAME:-gpt-oss:120b-cloud}
-      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.6}
-      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-2048}
-      LLM_TIMEOUT: ${LLM_TIMEOUT:-120}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # ── EDMS ────────────────────────────────────────────────────────
-      EDMS_BASE_URL: ${EDMS_BASE_URL:-http://host.docker.internal:8098}
-      # ── Database ────────────────────────────────────────────────────
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1234}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: ${POSTGRES_DB:-edms}
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@postgres:5432/${POSTGRES_DB:-edms}
-      CHECKPOINT_DB_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@postgres:5432/${POSTGRES_DB:-edms}
-      # ── Redis ────────────────────────────────────────────────────────
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_URL: redis://redis:6379/0
-      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-3600}
-      CACHE_TTL_READ: ${CACHE_TTL_READ:-300}
-      # ── Qdrant ───────────────────────────────────────────────────────
-      QDRANT_URL: http://qdrant:${QDRANT_PORT:-6333}
-      # ── MCP (внутри того же контейнера — localhost) ─────────────────
-      MCP_URL: http://localhost:${MCP_PORT:-8001}
-      MCP_PORT: ${MCP_PORT:-8001}
-      # ── App ──────────────────────────────────────────────────────────
-      API_PORT: ${API_PORT:-8000}
-      FEEDBACK_PORT: ${FEEDBACK_PORT:-8002}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      ENVIRONMENT: ${ENVIRONMENT:-production}
-      AGENT_MAX_ITERATIONS: ${AGENT_MAX_ITERATIONS:-10}
-      AGENT_TIMEOUT: ${AGENT_TIMEOUT:-120.0}
-      AGENT_MAX_CONTEXT_MESSAGES: ${AGENT_MAX_CONTEXT_MESSAGES:-20}
-      ORCHESTRATOR_URL: http://orchestrator:${API_PORT:-8000}
-      FEEDBACK_API_URL: http://feedback-collector:${FEEDBACK_PORT:-8002}
-    ports:
-      - "${API_PORT:-8000}:8000"
-    volumes:
-      - ./prompts:/app/edms_ai_assistant/orchestrator/prompts:ro
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:${API_PORT:-8000}/health || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 5
-      start_period: 90s
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - edms-network
 
-  # ── MCP Server ──────────────────────────────────────────────────────────
-  mcp-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: edms-mcp-server
-    restart: unless-stopped
-    command: >
-      uvicorn edms_ai_assistant.mcp_server.run_server:app
-        --host 0.0.0.0
-        --port ${MCP_PORT:-8001}
-        --log-level info
+  feedback:
+    build: ./feedback-collector
+    container_name: edms_feedback
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      ollama:
-        condition: service_healthy
-    environment:
-      OLLAMA_BASE_URL: http://ollama:11434
-      MODEL_NAME: ${MODEL_NAME:-gpt-oss:120b-cloud}
-      LLM_GENERATIVE_URL: http://ollama:11434
-      LLM_GENERATIVE_MODEL: ${MODEL_NAME:-gpt-oss:120b-cloud}
-      EDMS_BASE_URL: ${EDMS_BASE_URL:-http://host.docker.internal:8098}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1234}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: ${POSTGRES_DB:-edms}
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@postgres:5432/${POSTGRES_DB:-edms}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_URL: redis://redis:6379/0
-      MCP_HOST: 0.0.0.0
-      MCP_PORT: ${MCP_PORT:-8001}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    ports:
-      - "${MCP_PORT:-8001}:8001"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:${MCP_PORT:-8001}/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - edms-network
-
-  # ── Feedback Collector ──────────────────────────────────────────────────
-  feedback-collector:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: edms-feedback
-    restart: unless-stopped
-    command: >
-      uvicorn edms_ai_assistant.feedback_collector.feedback_api:app
-        --host 0.0.0.0
-        --port ${FEEDBACK_PORT:-8002}
-        --log-level info
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
       orchestrator:
         condition: service_healthy
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1234}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: ${POSTGRES_DB:-edms}
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@postgres:5432/${POSTGRES_DB:-edms}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_URL: redis://redis:6379/0
-      ORCHESTRATOR_URL: http://orchestrator:${API_PORT:-8000}
-      FEEDBACK_PORT: ${FEEDBACK_PORT:-8002}
-      RAG_UPDATE_HOUR: ${RAG_UPDATE_HOUR:-3}
-      RAG_UPDATE_MINUTE: ${RAG_UPDATE_MINUTE:-0}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ORCHESTRATOR_URL: http://orchestrator:8002
+      FEEDBACK_PORT: 8003
+      RAG_REBUILD_INTERVAL_HOURS: ${RAG_REBUILD_INTERVAL_HOURS:-24}
     ports:
-      - "${FEEDBACK_PORT:-8002}:8002"
+      - "8003:8003"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:${FEEDBACK_PORT:-8002}/health || exit 1"]
-      interval: 20s
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
       timeout: 5s
-      retries: 5
-      start_period: 30s
-    networks:
-      - edms-network
+      retries: 3
+    restart: unless-stopped
 
-  # ── Prometheus ──────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
-    container_name: edms-prometheus
-    restart: unless-stopped
+    container_name: edms_prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=30d"
       - "--web.enable-lifecycle"
-    volumes:
-      - ./infrastructure/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheusdata:/prometheus
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
-    networks:
-      - edms-network
+    restart: unless-stopped
 
-  # ── Grafana ─────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:latest
-    container_name: edms-grafana
-    restart: unless-stopped
+    container_name: edms_grafana
     depends_on:
       - prometheus
     environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
-      - grafanadata:/var/lib/grafana
-      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana_datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
-    networks:
-      - edms-network
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:

@@ -1,0 +1,243 @@
+{
+  "version": "1.0.0",
+  "description": "Реестр MCP-инструментов EDMS AI Ассистента",
+  "tools": [
+    {
+      "name": "get_document",
+      "description": "Получить документ по UUID. Используй когда пользователь указал конкретный ID документа.",
+      "category": "document_read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "description": "UUID документа в формате xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "token": {"type": "string", "description": "JWT токен авторизации"}
+        },
+        "required": ["document_id", "token"]
+      }
+    },
+    {
+      "name": "search_documents",
+      "description": "Поиск документов по фильтрам: статус, номер, автор, дата, категория.",
+      "category": "document_search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "token": {"type": "string"},
+          "filters": {
+            "type": "object",
+            "description": "Фильтры: {status, regNumber, dateFrom, dateTo, category, authorLastName}",
+            "properties": {
+              "status": {"type": "string", "enum": ["FORMING", "REGISTRATION", "IN_PROGRESS", "COMPLETED", "CANCELLED", "ARCHIVE"]},
+              "regNumber": {"type": "string"},
+              "dateFrom": {"type": "string", "format": "date"},
+              "dateTo": {"type": "string", "format": "date"},
+              "category": {"type": "string", "enum": ["INCOMING", "OUTGOING", "INTERN", "APPEAL", "CONTRACT", "MEETING"]},
+              "authorLastName": {"type": "string"},
+              "shortSummary": {"type": "string"}
+            }
+          },
+          "page": {"type": "integer", "default": 0, "minimum": 0},
+          "size": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50}
+        },
+        "required": ["token"]
+      }
+    },
+    {
+      "name": "get_document_history",
+      "description": "История движения документа: все этапы согласования, кто и когда.",
+      "category": "document_read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {"type": "string"},
+          "token": {"type": "string"}
+        },
+        "required": ["document_id", "token"]
+      }
+    },
+    {
+      "name": "get_document_attachments",
+      "description": "Список вложений документа: имена файлов, размеры, даты.",
+      "category": "document_read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {"type": "string"},
+          "token": {"type": "string"}
+        },
+        "required": ["document_id", "token"]
+      }
+    },
+    {
+      "name": "create_task",
+      "description": "Создать поручение по документу с назначением исполнителя и срока.",
+      "category": "document_write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {"type": "string"},
+          "token": {"type": "string"},
+          "task_text": {"type": "string", "description": "Текст поручения"},
+          "executor_employee_id": {"type": "string", "description": "UUID исполнителя"},
+          "planned_end_date": {"type": "string", "format": "date-time", "description": "ISO 8601: 2026-04-30T23:59:59Z"},
+          "task_type": {"type": "string", "enum": ["GENERAL", "PROJECT", "CONTROL"], "default": "GENERAL"}
+        },
+        "required": ["document_id", "token", "task_text", "executor_employee_id", "planned_end_date"]
+      }
+    },
+    {
+      "name": "update_document_status",
+      "description": "Изменить статус документа.",
+      "category": "document_write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {"type": "string"},
+          "token": {"type": "string"},
+          "new_status": {
+            "type": "string",
+            "enum": ["REGISTERED", "IN_PROGRESS", "COMPLETED", "CANCELLED", "ARCHIVE"]
+          },
+          "comment": {"type": "string", "default": ""}
+        },
+        "required": ["document_id", "token", "new_status"]
+      }
+    },
+    {
+      "name": "search_employees",
+      "description": "Поиск сотрудников по фамилии, имени, отделу. Нужен для получения UUID.",
+      "category": "employee",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "token": {"type": "string"},
+          "last_name": {"type": "string"},
+          "first_name": {"type": "string"},
+          "department_name": {"type": "string"},
+          "page": {"type": "integer", "default": 0},
+          "size": {"type": "integer", "default": 20}
+        },
+        "required": ["token"]
+      }
+    },
+    {
+      "name": "create_introduction",
+      "description": "Добавить сотрудников в лист ознакомления с документом.",
+      "category": "document_write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {"type": "string"},
+          "token": {"type": "string"},
+          "employee_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Список UUID сотрудников"
+          },
+          "comment": {"type": "string", "default": ""}
+        },
+        "required": ["document_id", "token", "employee_ids"]
+      }
+    },
+    {
+      "name": "set_document_control",
+      "description": "Поставить документ на контроль с установкой срока.",
+      "category": "document_write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {"type": "string"},
+          "token": {"type": "string"},
+          "control_date_end": {"type": "string", "format": "date-time"},
+          "controller_employee_id": {"type": "string"}
+        },
+        "required": ["document_id", "token", "control_date_end"]
+      }
+    },
+    {
+      "name": "remove_document_control",
+      "description": "Снять документ с контроля.",
+      "category": "document_write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {"type": "string"},
+          "token": {"type": "string"}
+        },
+        "required": ["document_id", "token"]
+      }
+    },
+    {
+      "name": "start_document",
+      "description": "Запустить документ в маршрут согласования.",
+      "category": "document_write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {"type": "string"},
+          "token": {"type": "string"}
+        },
+        "required": ["document_id", "token"]
+      }
+    },
+    {
+      "name": "get_user_document_stats",
+      "description": "Статистика документов пользователя: в работе, на контроле, созданные.",
+      "category": "analytics",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "token": {"type": "string"}
+        },
+        "required": ["token"]
+      }
+    },
+    {
+      "name": "get_document_versions",
+      "description": "История версий документа с датами и авторами изменений.",
+      "category": "document_read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {"type": "string"},
+          "token": {"type": "string"}
+        },
+        "required": ["document_id", "token"]
+      }
+    },
+    {
+      "name": "update_document_field",
+      "description": "Обновить поле документа: shortSummary, note, pages.",
+      "category": "document_write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {"type": "string"},
+          "token": {"type": "string"},
+          "field_name": {
+            "type": "string",
+            "enum": ["shortSummary", "note", "pages", "additionalPages", "exemplarCount"]
+          },
+          "field_value": {"type": "string"}
+        },
+        "required": ["document_id", "token", "field_name", "field_value"]
+      }
+    },
+    {
+      "name": "get_current_user",
+      "description": "Получить профиль текущего пользователя: ID, ФИО, должность, отдел.",
+      "category": "employee",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "token": {"type": "string"}
+        },
+        "required": ["token"]
+      }
+    }
+  ]
+}

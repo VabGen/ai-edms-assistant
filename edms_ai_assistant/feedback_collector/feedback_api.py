@@ -1,412 +1,225 @@
-# edms_ai_assistant/feedback_collector/feedback_api.py
 """
-Feedback Collector — FastAPI сервис для RLHF-loop.
+feedback_api.py — Сервис сбора обратной связи и обновления RAG.
 
 Endpoints:
-    POST /dialogs         — сохранить диалог (вызывается оркестратором)
-    POST /feedback        — оценить диалог (-1 | 0 | 1)
-    GET  /feedback/stats  — агрегированная статистика
-    GET  /health
-    GET  /metrics
+  POST /feedback       — приём оценки от пользователя
+  GET  /feedback/stats — статистика оценок
+  POST /rag/rebuild    — ручной запуск перестройки RAG
+  GET  /health         — состояние сервиса
 
-APScheduler (ежедневно в RAG_UPDATE_HOUR UTC):
-    1. Диалоги rating=1 → POST orchestrator /rag/add (successful_dialogs)
-    2. Диалоги rating=-1 → Redis key="anti_examples_block" (текст антипримеров)
-    3. Логирование статистики обновления
-
-ЗАПУСК:
-    # Рекомендуется (загружает .env автоматически через pydantic-settings):
-    python -m edms_ai_assistant.feedback_collector.feedback_api
-
-    # Или напрямую из корня проекта (python-dotenv подхватит .env):
-    python edms_ai_assistant/feedback_collector/feedback_api.py
+Ежедневная задача: rebuild RAG из актуальных логов.
+Негативные диалоги → анти-примеры в RAG.
 """
-
 from __future__ import annotations
 
+import asyncio
 import logging
-import sys
-from pathlib import Path
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-try:
-    from dotenv import load_dotenv  # type: ignore[import]
-
-    _env_file = _PROJECT_ROOT / ".env"
-    if _env_file.exists():
-        load_dotenv(_env_file, override=False)
-except ImportError:
-    pass
-
-from edms_ai_assistant.config import settings  # noqa: E402
-
-DATABASE_URL: str = settings.DATABASE_URL
-REDIS_URL: str = settings.REDIS_URL
-ORCHESTRATOR_URL: str = settings.ORCHESTRATOR_URL
-FEEDBACK_PORT: int = settings.FEEDBACK_PORT
-RAG_UPDATE_HOUR: int = settings.RAG_UPDATE_HOUR
-RAG_UPDATE_MINUTE: int = settings.RAG_UPDATE_MINUTE
-
-logging.basicConfig(
-    level=settings.LOGGING_LEVEL,
-    format=settings.LOGGING_FORMAT,
-)
-logger = logging.getLogger(__name__)
-
+import os
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
-from typing import Literal
 
 import httpx
-import redis.asyncio as aioredis
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, HTTPException
+import uvicorn
+from fastapi import BackgroundTasks, FastAPI
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    Float,
-    Integer,
-    String,
-    Text,
-    func,
-    select,
-    update,
+
+logger = logging.getLogger("feedback")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# ── ORM ───────────────────────────────────────────────────────────────────────
+ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://orchestrator:8002")
+REBUILD_INTERVAL_HOURS = int(os.getenv("RAG_REBUILD_INTERVAL_HOURS", "24"))
+API_PORT = int(os.getenv("FEEDBACK_PORT", "8003"))
 
-_engine = create_async_engine(DATABASE_URL, pool_pre_ping=True, pool_size=5)
-_Session: async_sessionmaker[AsyncSession] = async_sessionmaker(
-    _engine, expire_on_commit=False, autoflush=False
-)
-_redis: aioredis.Redis | None = None
-_scheduler = AsyncIOScheduler(timezone="UTC")
+_metrics: dict = {
+    "feedback_received_total": 0,
+    "feedback_positive": 0,
+    "feedback_negative": 0,
+    "feedback_neutral": 0,
+    "rag_rebuilds_total": 0,
+    "last_rebuild_timestamp": 0,
+    "start_time": time.time(),
+}
 
 
-class Base(DeclarativeBase):
-    pass
+async def _daily_rag_rebuild() -> None:
+    """Ежедневная задача: перестройка RAG-индекса."""
+    await asyncio.sleep(60)  # первый запуск через минуту
+    while True:
+        try:
+            logger.info("Daily RAG rebuild starting...")
+            async with httpx.AsyncClient(timeout=300) as client:
+                resp = await client.post(f"{ORCHESTRATOR_URL}/rag/rebuild")
+                if resp.is_success:
+                    _metrics["rag_rebuilds_total"] += 1
+                    _metrics["last_rebuild_timestamp"] = int(time.time())
+                    logger.info("Daily RAG rebuild complete")
+                else:
+                    logger.warning("RAG rebuild failed: %s", resp.text[:200])
+        except Exception as exc:
+            logger.error("Daily RAG rebuild error: %s", exc)
 
-
-class DialogLog(Base):
-    """Лог диалога с обратной связью."""
-
-    __tablename__ = "dialog_logs"
-    __table_args__ = {"schema": "edms"}
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(255), index=True)
-    session_id: Mapped[str] = mapped_column(String(255), index=True)
-    user_query: Mapped[str] = mapped_column(Text)
-    normalized_query: Mapped[str | None] = mapped_column(Text)
-    intent: Mapped[str | None] = mapped_column(String(100), index=True)
-    confidence: Mapped[float | None] = mapped_column(Float)
-    entities: Mapped[dict] = mapped_column(
-        JSONB(astext_type=Text()), server_default="{}"
-    )
-    selected_tool: Mapped[str | None] = mapped_column(String(255))
-    tool_args: Mapped[dict] = mapped_column(
-        JSONB(astext_type=Text()), server_default="{}"
-    )
-    tool_result: Mapped[dict] = mapped_column(
-        JSONB(astext_type=Text()), server_default="{}"
-    )
-    final_response: Mapped[str | None] = mapped_column(Text)
-    model_used: Mapped[str | None] = mapped_column(String(100))
-    tokens_used: Mapped[int] = mapped_column(Integer, server_default="0")
-    user_feedback: Mapped[int | None] = mapped_column(Integer)
-    feedback_comment: Mapped[str | None] = mapped_column(Text)
-    bypass_llm: Mapped[bool] = mapped_column(Boolean, server_default="false")
-    latency_ms: Mapped[int] = mapped_column(Integer, server_default="0")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
-    )
-    feedback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-# ── Pydantic схемы ────────────────────────────────────────────────────────────
-
-
-class DialogCreate(BaseModel):
-    id: str
-    user_id: str
-    session_id: str
-    user_query: str
-    normalized_query: str | None = None
-    intent: str | None = None
-    confidence: float | None = None
-    entities: dict = Field(default_factory=dict)
-    selected_tool: str | None = None
-    tool_args: dict = Field(default_factory=dict)
-    tool_result: dict = Field(default_factory=dict)
-    final_response: str | None = None
-    model_used: str | None = None
-    tokens_used: int = 0
-    bypass_llm: bool = False
-    latency_ms: int = 0
-
-
-class FeedbackRequest(BaseModel):
-    dialog_id: str
-    rating: Literal[-1, 0, 1]
-    comment: str | None = Field(None, max_length=2000)
-
-
-# ── Lifespan ──────────────────────────────────────────────────────────────────
+        await asyncio.sleep(REBUILD_INTERVAL_HOURS * 3600)
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
-    global _redis
-
-    try:
-        _redis = aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
-        await _redis.ping()
-        logger.info("Redis connected: %s", REDIS_URL)
-    except Exception as exc:
-        logger.warning("Redis unavailable: %s", exc)
-        _redis = None
-
-    _scheduler.add_job(
-        _daily_rlhf_update,
-        trigger=CronTrigger(hour=RAG_UPDATE_HOUR, minute=RAG_UPDATE_MINUTE),
-        id="rlhf_update",
-        replace_existing=True,
-    )
-    _scheduler.start()
-    logger.info(
-        "Feedback collector started — RLHF update scheduled at %02d:%02d UTC",
-        RAG_UPDATE_HOUR,
-        RAG_UPDATE_MINUTE,
-    )
-
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(_daily_rag_rebuild())
+    logger.info("Feedback collector started, RAG rebuild interval=%dh", REBUILD_INTERVAL_HOURS)
     yield
-
-    _scheduler.shutdown(wait=False)
-    if _redis:
-        await _redis.aclose()
-    await _engine.dispose()
-    logger.info("Feedback collector stopped")
+    task.cancel()
 
 
 app = FastAPI(
     title="EDMS Feedback Collector",
-    version="2.0.0",
+    version="1.0.0",
+    description="Сервис сбора обратной связи и обновления RAG",
     lifespan=lifespan,
 )
 
 
+# ── Models ────────────────────────────────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    dialog_id: str = Field(..., description="UUID диалога из /chat ответа")
+    rating: int = Field(..., ge=-1, le=1, description="-1 (плохо) / 0 (нейтрально) / 1 (хорошо)")
+    comment: str = Field(default="", max_length=1000, description="Комментарий пользователя")
+
+
+class FeedbackResponse(BaseModel):
+    success: bool
+    message: str
+    rating: int
+    negative_rate: float
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@app.post("/feedback", response_model=FeedbackResponse)
+async def receive_feedback(
+    req: FeedbackRequest,
+    background_tasks: BackgroundTasks,
+) -> FeedbackResponse:
+    """
+    Принять оценку пользователя.
 
-@app.post("/dialogs", status_code=201, summary="Сохранить диалог")
-async def save_dialog(data: DialogCreate) -> dict:
-    async with _Session() as session:
-        async with session.begin():
-            stmt = (
-                pg_insert(DialogLog)
-                .values(
-                    id=data.id,
-                    user_id=data.user_id,
-                    session_id=data.session_id,
-                    user_query=data.user_query,
-                    normalized_query=data.normalized_query,
-                    intent=data.intent,
-                    confidence=data.confidence,
-                    entities=data.entities,
-                    selected_tool=data.selected_tool,
-                    tool_args=data.tool_args,
-                    tool_result=data.tool_result,
-                    final_response=data.final_response,
-                    model_used=data.model_used,
-                    tokens_used=data.tokens_used,
-                    bypass_llm=data.bypass_llm,
-                    latency_ms=data.latency_ms,
-                )
-                .on_conflict_do_nothing(index_elements=["id"])
+    rating=1  → диалог успешный → добавляется в RAG как few-shot пример
+    rating=-1 → диалог неудачный → добавляется как анти-пример
+    """
+    _metrics["feedback_received_total"] += 1
+    if req.rating == 1:
+        _metrics["feedback_positive"] += 1
+    elif req.rating == -1:
+        _metrics["feedback_negative"] += 1
+    else:
+        _metrics["feedback_neutral"] += 1
+
+    # Проксируем в оркестратор
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{ORCHESTRATOR_URL}/feedback",
+                json={"dialog_id": req.dialog_id, "rating": req.rating, "comment": req.comment},
             )
-            await session.execute(stmt)
-    return {"status": "saved", "dialog_id": data.id}
+            if resp.is_success:
+                result = resp.json()
+                success = result.get("success", True)
+            else:
+                logger.warning("Orchestrator feedback error: %d", resp.status_code)
+                success = False
+    except Exception as exc:
+        logger.error("Failed to forward feedback: %s", exc)
+        success = False
+
+    # При позитивной оценке — немедленно добавляем в RAG
+    if req.rating == 1 and success:
+        background_tasks.add_task(_trigger_rag_update, req.dialog_id)
+
+    total = max(_metrics["feedback_received_total"], 1)
+    neg_rate = round(_metrics["feedback_negative"] / total, 3)
+
+    labels = {1: "положительная", 0: "нейтральная", -1: "отрицательная"}
+    return FeedbackResponse(
+        success=success,
+        message=f"Оценка '{labels.get(req.rating, '')}' {'принята' if success else 'не удалось сохранить'}",
+        rating=req.rating,
+        negative_rate=neg_rate,
+    )
 
 
-@app.post("/feedback", summary="Оценить диалог")
-async def submit_feedback(req: FeedbackRequest) -> dict:
-    async with _Session() as session:
-        async with session.begin():
-            result = await session.execute(
-                select(DialogLog).where(DialogLog.id == req.dialog_id)
+async def _trigger_rag_update(dialog_id: str) -> None:
+    """Фоновая задача: уведомить оркестратор об обновлении RAG."""
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            await client.post(
+                f"{ORCHESTRATOR_URL}/rag/rebuild",
+                params={"dialog_id": dialog_id},
             )
-            dialog = result.scalar_one_or_none()
-            if not dialog:
-                raise HTTPException(404, f"Диалог {req.dialog_id} не найден")
-
-            await session.execute(
-                update(DialogLog)
-                .where(DialogLog.id == req.dialog_id)
-                .values(
-                    user_feedback=req.rating,
-                    feedback_comment=req.comment,
-                    feedback_at=datetime.now(timezone.utc),
-                )
-            )
-
-    logger.info("Feedback: dialog=%s rating=%d", req.dialog_id, req.rating)
-    return {"status": "recorded", "dialog_id": req.dialog_id, "rating": req.rating}
+    except Exception as exc:
+        logger.error("RAG trigger update failed: %s", exc)
 
 
-@app.get("/feedback/stats", summary="Агрегированная статистика обратной связи")
+@app.get("/feedback/stats")
 async def feedback_stats() -> dict:
-    async with _Session() as session:
-        total_r = await session.execute(select(func.count(DialogLog.id)))
-        total = total_r.scalar_one()
-
-        rated_r = await session.execute(
-            select(func.count(DialogLog.id)).where(DialogLog.user_feedback.isnot(None))
-        )
-        rated = rated_r.scalar_one()
-
-        pos_r = await session.execute(
-            select(func.count(DialogLog.id)).where(DialogLog.user_feedback == 1)
-        )
-        neg_r = await session.execute(
-            select(func.count(DialogLog.id)).where(DialogLog.user_feedback == -1)
-        )
-
-        avg_lat_r = await session.execute(select(func.avg(DialogLog.latency_ms)))
-        avg_lat = avg_lat_r.scalar_one()
-
-        bypass_r = await session.execute(
-            select(func.count(DialogLog.id)).where(DialogLog.bypass_llm.is_(True))
-        )
-
-    pos = pos_r.scalar_one()
-    neg = neg_r.scalar_one()
+    """Статистика оценок пользователей."""
+    total = max(_metrics["feedback_received_total"], 1)
     return {
-        "total_dialogs": total,
-        "rated_dialogs": rated,
-        "positive": pos,
-        "negative": neg,
-        "neutral": rated - pos - neg,
-        "rating_rate": round(rated / total, 3) if total else 0.0,
-        "avg_latency_ms": round(avg_lat or 0, 1),
-        "bypass_llm_count": bypass_r.scalar_one(),
+        "total": _metrics["feedback_received_total"],
+        "positive": _metrics["feedback_positive"],
+        "negative": _metrics["feedback_negative"],
+        "neutral": _metrics["feedback_neutral"],
+        "positive_rate": round(_metrics["feedback_positive"] / total, 3),
+        "negative_rate": round(_metrics["feedback_negative"] / total, 3),
+        "rag_rebuilds": _metrics["rag_rebuilds_total"],
+        "last_rebuild": _metrics["last_rebuild_timestamp"],
     }
+
+
+@app.post("/rag/rebuild")
+async def trigger_rebuild(background_tasks: BackgroundTasks) -> dict:
+    """Вручную запустить перестройку RAG."""
+    background_tasks.add_task(_run_manual_rebuild)
+    return {"status": "started", "message": "Перестройка RAG запущена"}
+
+
+async def _run_manual_rebuild() -> None:
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(f"{ORCHESTRATOR_URL}/rag/rebuild")
+            if resp.is_success:
+                _metrics["rag_rebuilds_total"] += 1
+                _metrics["last_rebuild_timestamp"] = int(time.time())
+                logger.info("Manual RAG rebuild triggered")
+    except Exception as exc:
+        logger.error("Manual RAG rebuild failed: %s", exc)
 
 
 @app.get("/health")
 async def health() -> dict:
-    redis_ok = False
-    if _redis:
-        try:
-            await _redis.ping()
-            redis_ok = True
-        except Exception:
-            pass
     return {
         "status": "ok",
-        "redis": "ok" if redis_ok else "unavailable",
-        "scheduler_running": _scheduler.running,
+        "service": "feedback-collector",
+        "version": "1.0.0",
+        "feedback_received": _metrics["feedback_received_total"],
+        "rag_rebuilds": _metrics["rag_rebuilds_total"],
     }
 
 
-@app.get("/metrics")
-async def metrics() -> dict:
-    return {"status": "ok", "note": "Install prometheus_client for full metrics"}
-
-
-# ── RLHF Background Job ───────────────────────────────────────────────────────
-
-
-async def _daily_rlhf_update() -> None:
-    """Ежедневный RLHF-цикл."""
-    since = datetime.now(timezone.utc) - timedelta(hours=24)
-    logger.info("RLHF daily update started (since %s)", since.isoformat())
-
-    positive_count = 0
-    negative_count = 0
-
-    async with _Session() as session:
-        pos_r = await session.execute(
-            select(DialogLog).where(
-                DialogLog.user_feedback == 1,
-                DialogLog.created_at >= since,
-            )
-        )
-        positive_dialogs = list(pos_r.scalars().all())
-
-        neg_r = await session.execute(
-            select(DialogLog).where(
-                DialogLog.user_feedback == -1,
-                DialogLog.created_at >= since,
-            )
-        )
-        negative_dialogs = list(neg_r.scalars().all())
-
-    if positive_dialogs:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for dialog in positive_dialogs:
-                try:
-                    await client.post(
-                        f"{ORCHESTRATOR_URL}/rag/add",
-                        json={
-                            "dialog_id": dialog.id,
-                            "user_query": dialog.user_query,
-                            "normalized_query": dialog.normalized_query
-                            or dialog.user_query,
-                            "intent": dialog.intent or "unknown",
-                            "tool_used": dialog.selected_tool or "",
-                            "tool_args": dialog.tool_args or {},
-                            "response": dialog.final_response or "",
-                            "rating": 1,
-                        },
-                    )
-                    positive_count += 1
-                except Exception as exc:
-                    logger.warning("RAG add failed for dialog %s: %s", dialog.id, exc)
-
-    if negative_dialogs and _redis:
-        lines = ["=== ЧЕГО НЕЛЬЗЯ ДЕЛАТЬ ==="]
-        for i, d in enumerate(negative_dialogs[:20], 1):
-            lines.append(
-                f"[{i}] Запрос: {d.user_query}\n"
-                f"    Инструмент: {d.selected_tool or '—'}\n"
-                f"    Плохой ответ: {(d.final_response or '')[:200]}\n"
-                f"    Комментарий: {d.feedback_comment or '—'}"
-            )
-            negative_count += 1
-        try:
-            await _redis.setex("anti_examples_block", 86400 * 2, "\n\n".join(lines))
-        except Exception as exc:
-            logger.warning("Redis anti_examples write failed: %s", exc)
-
-    logger.info(
-        "RLHF update completed: positive_added=%d negative_stored=%d",
-        positive_count,
-        negative_count,
-    )
+@app.get("/metrics", response_class=PlainTextResponse)
+async def prometheus_metrics() -> str:
+    uptime = int(time.time() - _metrics["start_time"])
+    lines = [
+        f'edms_feedback_total {_metrics["feedback_received_total"]}',
+        f'edms_feedback_positive_total {_metrics["feedback_positive"]}',
+        f'edms_feedback_negative_total {_metrics["feedback_negative"]}',
+        f'edms_rag_rebuilds_total {_metrics["rag_rebuilds_total"]}',
+        f"edms_feedback_uptime_seconds {uptime}",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 if __name__ == "__main__":
-    import uvicorn
-
-    if sys.platform == "win32":
-        import asyncio
-        import selectors
-
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        loop = asyncio.SelectorEventLoop(selectors.SelectSelector())
-        asyncio.set_event_loop(loop)
-
-    uvicorn.run(app, host="0.0.0.0", port=FEEDBACK_PORT, log_level="info")
+    uvicorn.run("feedback_api:app", host="0.0.0.0", port=API_PORT, log_level="info")

@@ -1,461 +1,443 @@
-# edms_ai_assistant\orchestrator/nlp_preprocessor.py
 """
-NLU-препроцессор для русскоязычных запросов EDMS.
+nlp_preprocessor.py — NLU/NLP предобработка запросов EDMS AI Ассистента.
 
-Без внешних зависимостей — только стандартная библиотека Python (re, dataclasses).
-
-Экспортирует:
-    ExtractedEntities — извлечённые сущности
-    NLUResult         — результат NLU-анализа
-    NLPPreprocessor   — основной класс
-    get_preprocessor() — синглтон
+Выполняет до вызова LLM:
+1. Нормализацию текста запроса
+2. Извлечение именованных сущностей (UUID, даты, статусы, категории)
+3. Определение намерения (intent) с оценкой уверенности
+4. Принятие решения о fast-path (без LLM для очевидных запросов)
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from enum import Enum
 from typing import Any
 
-# ── Датаклассы ────────────────────────────────────────────────────────────
+logger = logging.getLogger("nlp")
+
+# ── Intent definitions ────────────────────────────────────────────────────────
+
+class Intent(str, Enum):
+    GET_DOCUMENT      = "get_document"
+    SEARCH_DOCUMENTS  = "search_documents"
+    GET_HISTORY       = "get_history"
+    GET_ATTACHMENTS   = "get_attachments"
+    GET_VERSIONS      = "get_versions"
+    CREATE_TASK       = "create_task"
+    CREATE_INTRO      = "create_introduction"
+    UPDATE_STATUS     = "update_status"
+    SET_CONTROL       = "set_control"
+    REMOVE_CONTROL    = "remove_control"
+    START_DOCUMENT    = "start_document"
+    SEARCH_EMPLOYEES  = "search_employees"
+    GET_STATS         = "get_stats"
+    UPDATE_FIELD      = "update_field"
+    GET_USER_INFO     = "get_user_info"
+    GENERAL_QUESTION  = "general_question"
+    UNKNOWN           = "unknown"
 
 
 @dataclass
-class ExtractedEntities:
-    """Именованные сущности, извлечённые из текста запроса."""
-
-    document_ids: list[str] = field(default_factory=list)
-    date_range: tuple[datetime, datetime] | None = None
-    statuses: list[str] = field(default_factory=list)
-    document_types: list[str] = field(default_factory=list)
-    user_names: list[str] = field(default_factory=list)
-    departments: list[str] = field(default_factory=list)
-    page_number: int | None = None
-    limit: int | None = None
+class Entity:
+    """Извлечённая именованная сущность."""
+    type: str       # uuid, date, person, doc_number, status, category, amount
+    value: Any
+    raw: str        # исходный текст
+    confidence: float = 1.0
 
 
 @dataclass
 class NLUResult:
-    """Результат NLU-анализа запроса пользователя."""
-
-    intent: str
-    confidence: float
-    entities: ExtractedEntities
+    """Результат NLU-предобработки."""
+    original_query: str
     normalized_query: str
-    bypass_llm: bool = False
-    required_tool: str | None = None
-    tool_args: dict[str, Any] | None = None
+    intent: Intent
+    secondary_intents: list[Intent] = field(default_factory=list)
+    confidence: float = 0.0
+    entities: dict[str, list[Entity]] = field(default_factory=dict)
+    can_skip_llm: bool = False   # True = прямой вызов инструмента без LLM
+    fast_path_tool: str | None = None
+    fast_path_args: dict[str, Any] = field(default_factory=dict)
+
+    def get_entity(self, entity_type: str, default: Any = None) -> Any:
+        """Получить первое значение сущности по типу."""
+        items = self.entities.get(entity_type, [])
+        return items[0].value if items else default
+
+    def to_log_dict(self) -> dict[str, Any]:
+        return {
+            "intent": self.intent.value,
+            "confidence": round(self.confidence, 2),
+            "can_skip_llm": self.can_skip_llm,
+            "entities": {k: [e.raw for e in v] for k, v in self.entities.items()},
+        }
 
 
-# ── Паттерны ──────────────────────────────────────────────────────────────
+# ── Intent keyword maps ───────────────────────────────────────────────────────
 
-_UUID_RE = re.compile(
-    r"\b[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
-    re.IGNORECASE,
-)
-_DOC_NUMBER_RE = re.compile(
-    r"\b(?:DOC-\d{1,10}|#\d{4,10}|№\s*\d{4,10})\b", re.IGNORECASE
-)
-_DATE_RE = re.compile(
-    r"\b(\d{2})[./](\d{2})[./](\d{4})\b" r"|\b(\d{4})-(\d{2})-(\d{2})\b"
-)
-_PAGE_RE = re.compile(r"\bстраниц[аую]?\s+(\d+)\b|\bpage\s+(\d+)\b", re.IGNORECASE)
-_LIMIT_RE = re.compile(
-    r"\b(?:первые|покажи|top)\s+(\d+)\b|\b(\d+)\s+(?:документов|результатов|записей)\b",
-    re.IGNORECASE,
-)
-_NAME_RE = re.compile(r"\b([А-ЯЁ][а-яё]+)\s+([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)\b")
-_DEPT_RE = re.compile(
-    r"\b(?:отдел|департамент|управление|служба)\s+([А-Яа-яёЁ\s]+?)(?:\s|$|\.|,)",
-    re.IGNORECASE,
-)
-
-_STATUS_MAP: dict[str, str] = {
-    "черновик": "draft",
-    "черновике": "draft",
-    "в работе": "draft",
-    "на согласовании": "review",
-    "на проверке": "review",
-    "ожидает согласования": "review",
-    "одобрен": "approved",
-    "согласован": "approved",
-    "утверждён": "approved",
-    "отклонён": "rejected",
-    "отказан": "rejected",
-    "возвращён": "rejected",
-    "подписан": "signed",
-    "подписанный": "signed",
-    "в архиве": "archived",
-    "архивный": "archived",
-    "архивирован": "archived",
-}
-
-_DOC_TYPES: list[str] = ["договор", "приказ", "акт", "счёт", "протокол", "спецификация"]
-_DOC_TYPE_VARIANTS: dict[str, str] = {
-    "договоры": "договор",
-    "договора": "договор",
-    "договором": "договор",
-    "приказы": "приказ",
-    "приказа": "приказ",
-    "акты": "акт",
-    "актов": "акт",
-    "счета": "счёт",
-    "счетов": "счёт",
-    "протоколы": "протокол",
-    "протоколов": "протокол",
-    "спецификации": "спецификация",
-    "спецификаций": "спецификация",
-}
-
-_RELATIVE_DATES: list[tuple[re.Pattern, int, int]] = [
-    (re.compile(r"\bсегодня\b", re.IGNORECASE), 0, 0),
-    (re.compile(r"\bвчера\b", re.IGNORECASE), -1, -1),
-    (re.compile(r"\bзавтра\b", re.IGNORECASE), 1, 1),
-    (re.compile(r"\bза\s+(?:последнюю|прошлую)\s+неделю\b", re.IGNORECASE), -7, 0),
-    (re.compile(r"\bза\s+последние\s+7\s+дней\b", re.IGNORECASE), -7, 0),
-    (re.compile(r"\bза\s+последние\s+30\s+дней\b", re.IGNORECASE), -30, 0),
-    (re.compile(r"\bза\s+последний\s+месяц\b", re.IGNORECASE), -30, 0),
-    (re.compile(r"\bза\s+прошлый\s+месяц\b", re.IGNORECASE), -60, -30),
-    (re.compile(r"\bза\s+(?:этот|текущий)\s+год\b", re.IGNORECASE), -365, 0),
+# Format: (intent, base_confidence, [keywords/phrases])
+_INTENT_RULES: list[tuple[Intent, float, list[str]]] = [
+    (Intent.GET_DOCUMENT, 0.85, [
+        "покажи документ", "открой документ", "документ по id", "документ с id",
+        "получи документ", "найди документ по", "покажи карточку",
+        "что за документ", "информация о документе",
+    ]),
+    (Intent.SEARCH_DOCUMENTS, 0.80, [
+        "найди документы", "поиск документов", "покажи документы",
+        "все документы", "список документов", "документы за", "документы со статусом",
+        "входящие", "исходящие", "внутренние", "договоры", "обращения",
+        "найди входящ", "найди исходящ",
+    ]),
+    (Intent.GET_HISTORY, 0.85, [
+        "история документа", "история движения", "кто согласовал",
+        "кто подписал", "этапы согласования", "движение документа",
+        "журнал документа", "кто и когда",
+    ]),
+    (Intent.GET_ATTACHMENTS, 0.85, [
+        "вложения", "файлы", "приложения к документу", "прикреплённые файлы",
+        "что приложено", "список файлов",
+    ]),
+    (Intent.GET_VERSIONS, 0.85, [
+        "версии документа", "история версий", "изменения в документе",
+        "что менялось", "предыдущие версии",
+    ]),
+    (Intent.CREATE_TASK, 0.85, [
+        "создай поручение", "создать поручение", "назначь поручение",
+        "поставь задачу", "создай задачу", "назначь задачу",
+        "добавь поручение", "поручи",
+    ]),
+    (Intent.CREATE_INTRO, 0.85, [
+        "добавь в ознакомление", "ознакомление", "ознакомить",
+        "список ознакомления", "добавить в ознакомление", "ознакомь",
+    ]),
+    (Intent.UPDATE_STATUS, 0.80, [
+        "измени статус", "поменяй статус", "обнови статус",
+        "изменить статус", "статус на", "перевести в статус",
+    ]),
+    (Intent.SET_CONTROL, 0.85, [
+        "поставь на контроль", "взять на контроль", "поставить на контроль",
+        "контрольный срок", "добавь контроль",
+    ]),
+    (Intent.REMOVE_CONTROL, 0.85, [
+        "снять с контроля", "убрать с контроля", "снять контроль",
+        "убери контроль",
+    ]),
+    (Intent.START_DOCUMENT, 0.85, [
+        "запусти документ", "запустить документ", "начать согласование",
+        "отправить на согласование", "начать маршрут",
+    ]),
+    (Intent.SEARCH_EMPLOYEES, 0.85, [
+        "найди сотрудника", "найди сотрудников", "поиск сотрудника",
+        "кто такой", "найди работника", "найди человека",
+    ]),
+    (Intent.GET_STATS, 0.80, [
+        "статистика", "сколько документов", "мои документы", "мои задачи",
+        "обзор", "сводка", "нагрузка",
+    ]),
+    (Intent.UPDATE_FIELD, 0.80, [
+        "измени заголовок", "поменяй название", "обнови заголовок",
+        "измени примечание", "поменяй содержание",
+    ]),
+    (Intent.GET_USER_INFO, 0.85, [
+        "кто я", "мой профиль", "информация обо мне", "мои данные",
+    ]),
 ]
 
-_INTENT_KEYWORDS: dict[str, dict[str, list[str]]] = {
-    "get_document": {
-        "primary": [
-            "покажи документ",
-            "открой документ",
-            "найди документ",
-            "что за документ",
-            "детали документа",
-        ],
-        "secondary": ["покажи", "открой", "посмотри", "документ"],
-    },
-    "search_documents": {
-        "primary": [
-            "найди все",
-            "поиск документов",
-            "список документов",
-            "покажи все договоры",
-            "все документы",
-        ],
-        "secondary": ["найди", "поищи", "список", "реестр", "сколько документов"],
-    },
-    "create_document": {
-        "primary": [
-            "создай документ",
-            "создай договор",
-            "создай приказ",
-            "новый документ",
-            "заведи документ",
-        ],
-        "secondary": ["создай", "оформи", "зарегистрируй"],
-    },
-    "update_status": {
-        "primary": [
-            "измени статус",
-            "сменить статус",
-            "согласуй",
-            "подпиши",
-            "отклони",
-            "архивируй",
-            "отправь на согласование",
-        ],
-        "secondary": ["утвердить", "перевести в статус"],
-    },
-    "get_history": {
-        "primary": [
-            "история документа",
-            "журнал изменений",
-            "кто изменял",
-            "аудит документа",
-            "что делали с документом",
-        ],
-        "secondary": ["история", "журнал", "аудит"],
-    },
-    "assign_document": {
-        "primary": [
-            "назначь ответственного",
-            "передай документ",
-            "добавь в согласующие",
-            "поставь на согласование",
-            "назначить рецензента",
-        ],
-        "secondary": ["назначь", "передай", "добавь исполнителя"],
-    },
-    "get_analytics": {
-        "primary": [
-            "статистика документов",
-            "отчёт по документам",
-            "аналитика",
-            "нагрузка на отдел",
-            "просроченные документы",
-        ],
-        "secondary": ["статистика", "отчёт", "метрики", "дашборд"],
-    },
-    "get_workflow_status": {
-        "primary": [
-            "где застрял документ",
-            "кто не согласовал",
-            "статус согласования",
-            "прогресс документа",
-            "кто должен подписать",
-        ],
-        "secondary": ["статус", "прогресс", "ожидает", "процесс"],
-    },
+# ── Patterns ──────────────────────────────────────────────────────────────────
+
+_UUID_PATTERN = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+
+_DOC_NUMBER_PATTERN = re.compile(
+    r"\b(ВХ|ИСХ|ВН|ОБ|ДОГ)-\d{4}-\d+\b|\b\d{2,6}/\d{2,6}\b",
+    re.IGNORECASE,
+)
+
+_DATE_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\b(\d{1,2})[./](\d{1,2})[./](\d{4})\b"), "dd.mm.yyyy"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
+]
+
+_STATUS_MAP: dict[str, str] = {
+    "зарегистрирован": "REGISTERED",
+    "в работе": "IN_PROGRESS",
+    "выполнен": "COMPLETED",
+    "завершён": "COMPLETED",
+    "отменён": "CANCELLED",
+    "аннулирован": "CANCELLED",
+    "в архиве": "ARCHIVE",
 }
 
+_CATEGORY_MAP: dict[str, str] = {
+    "входящ": "INCOMING",
+    "исходящ": "OUTGOING",
+    "внутренн": "INTERN",
+    "обращени": "APPEAL",
+    "договор": "CONTRACT",
+    "совещани": "MEETING",
+}
 
-# ── NLPPreprocessor ───────────────────────────────────────────────────────
+_PERSON_PATTERN = re.compile(
+    r"\b([А-ЯЁ][а-яё]+)\s+([А-ЯЁ][а-яё]+)(?:\s+([А-ЯЁ][а-яё]+))?\b"
+)
 
+# ── NLPPreprocessor ───────────────────────────────────────────────────────────
 
 class NLPPreprocessor:
     """
-    NLU-препроцессор для русскоязычных запросов EDMS.
+    NLU-препроцессор запросов.
 
-    Методы:
-        preprocess(text) → NLUResult  — полный NLU-анализ запроса
+    Алгоритм:
+    1. Нормализация текста
+    2. Извлечение сущностей
+    3. Классификация намерения
+    4. Оценка возможности fast-path (пропуск LLM)
     """
 
-    def preprocess(self, text: str) -> NLUResult:
+    def __init__(self) -> None:
+        self._now = datetime.now
+
+    def process(self, query: str, context: dict[str, Any] | None = None) -> NLUResult:
         """
-        Выполняет NLU-анализ: intent, entities, normalized_query, bypass_llm.
+        Обработать запрос пользователя.
 
         Args:
-            text: Исходный текст запроса пользователя.
+            query: Исходный текст запроса
+            context: Контекст сессии (active_document_id и т.п.)
 
         Returns:
-            NLUResult со всеми извлечёнными данными.
+            NLUResult с intent, entities, fast-path флагами
         """
-        clean = " ".join(text.split())
-        entities = self._extract_entities(clean)
-        intent, confidence = self._classify_intent(clean)
-        normalized = self._normalize(clean, entities)
-        bypass, tool, args = self._check_bypass(intent, confidence, entities)
+        normalized = self._normalize(query)
+        entities = self._extract_entities(normalized)
 
-        return NLUResult(
+        # Если в контексте есть активный документ — добавляем его UUID
+        if context and context.get("active_document_id"):
+            if "uuid" not in entities:
+                entities["uuid"] = [Entity(
+                    type="uuid",
+                    value=context["active_document_id"],
+                    raw=context["active_document_id"],
+                    confidence=0.9,
+                )]
+
+        intent, confidence, secondary = self._classify_intent(normalized, entities)
+
+        can_skip, tool, args = self._check_fast_path(
+            intent, confidence, entities, context
+        )
+
+        result = NLUResult(
+            original_query=query,
+            normalized_query=normalized,
             intent=intent,
+            secondary_intents=secondary,
             confidence=confidence,
             entities=entities,
-            normalized_query=normalized,
-            bypass_llm=bypass,
-            required_tool=tool,
-            tool_args=args,
+            can_skip_llm=can_skip,
+            fast_path_tool=tool,
+            fast_path_args=args,
         )
 
-    # ── Извлечение сущностей ──────────────────────────────────────────────
-
-    def _extract_entities(self, text: str) -> ExtractedEntities:
-        return ExtractedEntities(
-            document_ids=self._extract_doc_ids(text),
-            date_range=self._extract_date_range(text),
-            statuses=self._extract_statuses(text),
-            document_types=self._extract_doc_types(text),
-            user_names=self._extract_names(text),
-            departments=self._extract_departments(text),
-            page_number=self._extract_page(text),
-            limit=self._extract_limit(text),
+        logger.info(
+            "NLU: intent=%s conf=%.2f skip_llm=%s entities=%s",
+            intent.value, confidence, can_skip,
+            {k: len(v) for k, v in entities.items()},
         )
+        return result
 
-    def _extract_doc_ids(self, text: str) -> list[str]:
-        ids: list[str] = []
-        for m in _UUID_RE.finditer(text):
-            ids.append(m.group(0).lower())
-        for m in _DOC_NUMBER_RE.finditer(text):
-            normalized = re.sub(r"^[#№\s]+", "DOC-", m.group(0).strip()).upper()
-            ids.append(normalized)
-        return ids
+    def _normalize(self, text: str) -> str:
+        """Нормализовать текст: нижний регистр, пробелы, очистка."""
+        text = text.strip().lower()
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r"[«»\"']", "", text)
+        return text
 
-    def _extract_date_range(self, text: str) -> tuple[datetime, datetime] | None:
-        now = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        for pattern, start_off, end_off in _RELATIVE_DATES:
-            if pattern.search(text):
-                start = now + timedelta(days=start_off)
-                end = now + timedelta(days=end_off)
-                if end < start:
-                    start, end = end, start
-                return start, end.replace(hour=23, minute=59, second=59)
+    def _extract_entities(self, text: str) -> dict[str, list[Entity]]:
+        """Извлечь все именованные сущности."""
+        entities: dict[str, list[Entity]] = {}
 
-        dates: list[datetime] = []
-        for m in _DATE_RE.finditer(text):
-            try:
-                if m.group(1):
-                    day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                else:
-                    year, month, day = int(m.group(4)), int(m.group(5)), int(m.group(6))
-                dates.append(datetime(year, month, day, tzinfo=timezone.utc))
-            except ValueError:
-                continue
+        # UUID
+        for m in _UUID_PATTERN.finditer(text):
+            entities.setdefault("uuid", []).append(
+                Entity(type="uuid", value=m.group(), raw=m.group())
+            )
 
-        if len(dates) == 1:
-            d = dates[0]
-            return d, d.replace(hour=23, minute=59, second=59)
-        if len(dates) >= 2:
-            dates.sort()
-            return dates[0], dates[-1].replace(hour=23, minute=59, second=59)
-        return None
+        # Регистрационные номера
+        for m in _DOC_NUMBER_PATTERN.finditer(text):
+            entities.setdefault("doc_number", []).append(
+                Entity(type="doc_number", value=m.group().upper(), raw=m.group())
+            )
 
-    def _extract_statuses(self, text: str) -> list[str]:
-        text_lower = text.lower()
-        found: list[str] = []
-        for synonym, normalized in _STATUS_MAP.items():
-            if synonym in text_lower and normalized not in found:
-                found.append(normalized)
-        return found
+        # Даты
+        for pat, fmt in _DATE_PATTERNS:
+            for m in pat.finditer(text):
+                try:
+                    if fmt == "dd.mm.yyyy":
+                        day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    else:
+                        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    parsed = datetime(year, month, day)
+                    entities.setdefault("date", []).append(
+                        Entity(type="date", value=parsed.isoformat()[:10], raw=m.group())
+                    )
+                except ValueError:
+                    pass
 
-    def _extract_doc_types(self, text: str) -> list[str]:
-        text_lower = text.lower()
-        found: list[str] = []
-        for doc_type in _DOC_TYPES:
-            if doc_type in text_lower and doc_type not in found:
-                found.append(doc_type)
-        for variant, canonical in _DOC_TYPE_VARIANTS.items():
-            if variant in text_lower and canonical not in found:
-                found.append(canonical)
-        return found
+        # Относительные даты
+        rel_dates = self._extract_relative_dates(text)
+        if rel_dates:
+            entities.setdefault("date", []).extend(rel_dates)
 
-    def _extract_names(self, text: str) -> list[str]:
-        names: list[str] = []
-        for m in _NAME_RE.finditer(text):
-            names.append(m.group(0))
-        return names
+        # Статусы
+        for kw, val in _STATUS_MAP.items():
+            if kw in text:
+                entities.setdefault("status", []).append(
+                    Entity(type="status", value=val, raw=kw)
+                )
 
-    def _extract_departments(self, text: str) -> list[str]:
-        depts: list[str] = []
-        for m in _DEPT_RE.finditer(text):
-            dept = m.group(1).strip()
-            if dept and len(dept) > 2:
-                depts.append(dept)
-        return depts
+        # Категории документов
+        for kw, val in _CATEGORY_MAP.items():
+            if kw in text:
+                entities.setdefault("category", []).append(
+                    Entity(type="category", value=val, raw=kw)
+                )
 
-    def _extract_page(self, text: str) -> int | None:
-        m = _PAGE_RE.search(text)
-        return int(m.group(1) or m.group(2)) if m else None
+        # ФИО (упрощённо)
+        for m in _PERSON_PATTERN.finditer(text):
+            entities.setdefault("person", []).append(
+                Entity(
+                    type="person",
+                    value={"last_name": m.group(1), "first_name": m.group(2)},
+                    raw=m.group(),
+                    confidence=0.7,
+                )
+            )
 
-    def _extract_limit(self, text: str) -> int | None:
-        m = _LIMIT_RE.search(text)
-        return int(m.group(1) or m.group(2)) if m else None
+        return entities
 
-    # ── Классификация намерения ───────────────────────────────────────────
+    def _extract_relative_dates(self, text: str) -> list[Entity]:
+        """Извлечь относительные даты: сегодня, завтра, через N дней."""
+        results: list[Entity] = []
+        now = self._now()
 
-    def _classify_intent(self, text: str) -> tuple[str, float]:
-        """Определяет намерение через взвешенное совпадение ключевых слов."""
-        text_lower = text.lower()
-        scores: dict[str, float] = {}
+        if "сегодня" in text:
+            results.append(Entity(type="date", value=now.isoformat()[:10], raw="сегодня"))
+        if "завтра" in text:
+            d = (now + timedelta(days=1)).isoformat()[:10]
+            results.append(Entity(type="date", value=d, raw="завтра"))
+        if "вчера" in text:
+            d = (now - timedelta(days=1)).isoformat()[:10]
+            results.append(Entity(type="date", value=d, raw="вчера"))
 
-        for intent, kws in _INTENT_KEYWORDS.items():
-            score = 0.0
-            for phrase in kws.get("primary", []):
-                if phrase in text_lower:
-                    score += 0.35
-            for kw in kws.get("secondary", []):
-                if kw in text_lower:
-                    score += 0.15
-            if score > 0:
-                scores[intent] = min(score, 0.98)
+        # "через N дней/недель"
+        for m in re.finditer(r"через\s+(\d+)\s+(день|дня|дней|неделю|недели|недель|месяц|месяца|месяцев)", text):
+            n = int(m.group(1))
+            unit = m.group(2)
+            if "нед" in unit:
+                delta = timedelta(weeks=n)
+            elif "мес" in unit:
+                delta = timedelta(days=30 * n)
+            else:
+                delta = timedelta(days=n)
+            d = (now + delta).isoformat()[:10]
+            results.append(Entity(type="date", value=d, raw=m.group()))
 
-        if text.strip().endswith("?"):
-            scores["get_document"] = scores.get("get_document", 0) + 0.1
+        return results
+
+    def _classify_intent(
+        self,
+        text: str,
+        entities: dict[str, list[Entity]],
+    ) -> tuple[Intent, float, list[Intent]]:
+        """Классифицировать намерение по ключевым словам."""
+        scores: dict[Intent, float] = {}
+
+        for intent, base_conf, keywords in _INTENT_RULES:
+            for kw in keywords:
+                if kw in text:
+                    scores[intent] = max(scores.get(intent, 0.0), base_conf)
+
+        # Буст для намерений подкреплённых сущностями
+        if "uuid" in entities:
+            if Intent.GET_DOCUMENT in scores:
+                scores[Intent.GET_DOCUMENT] = min(1.0, scores[Intent.GET_DOCUMENT] + 0.1)
+        if "doc_number" in entities and Intent.SEARCH_DOCUMENTS not in scores:
+            scores[Intent.SEARCH_DOCUMENTS] = max(scores.get(Intent.SEARCH_DOCUMENTS, 0.0), 0.65)
 
         if not scores:
-            return "unknown", 0.3
+            return Intent.UNKNOWN, 0.0, []
 
-        best = max(scores, key=lambda k: scores[k])
-        return best, round(scores[best], 3)
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        best_intent, best_conf = sorted_scores[0]
+        secondary = [i for i, c in sorted_scores[1:3] if c >= 0.5]
 
-    # ── Нормализация ──────────────────────────────────────────────────────
+        return best_intent, best_conf, secondary
 
-    def _normalize(self, text: str, entities: ExtractedEntities) -> str:
-        """Заменяет конкретные значения плейсхолдерами для кэширования."""
-        normalized = _UUID_RE.sub("{document_uuid}", text)
-        normalized = _DOC_NUMBER_RE.sub("{document_id}", normalized)
-        normalized = _DATE_RE.sub("{date}", normalized)
-        for name in entities.user_names:
-            normalized = normalized.replace(name, "{person_name}")
-        return normalized.strip()
-
-    # ── Bypass LLM ────────────────────────────────────────────────────────
-
-    def _check_bypass(
+    def _check_fast_path(
         self,
-        intent: str,
+        intent: Intent,
         confidence: float,
-        entities: ExtractedEntities,
-    ) -> tuple[bool, str | None, dict[str, Any] | None]:
+        entities: dict[str, list[Entity]],
+        context: dict[str, Any] | None,
+    ) -> tuple[bool, str | None, dict[str, Any]]:
         """
-        Определяет возможность обхода LLM при высокой уверенности.
+        Определить возможность fast-path (вызов инструмента без LLM).
 
-        Bypass при: confidence > 0.92 + все нужные сущности присутствуют.
+        Критерии fast-path:
+        - Высокая уверенность в намерении (>= 0.85)
+        - Все необходимые сущности присутствуют
+        - Запрос простой (один шаг, без условий)
         """
-        if confidence <= 0.92:
-            return False, None, None
+        if confidence < 0.85:
+            return False, None, {}
 
-        if intent == "get_document" and entities.document_ids:
-            return (
-                True,
-                "get_document",
-                {
-                    "document_id": entities.document_ids[0],
-                    "include_history": False,
-                    "include_attachments": True,
-                },
-            )
+        token_placeholder = "{token}"  # заменяется оркестратором
 
-        if intent == "get_history" and entities.document_ids:
-            return (
-                True,
-                "get_document_history",
-                {
-                    "document_id": entities.document_ids[0],
-                    "limit": entities.limit or 50,
-                },
-            )
+        if intent == Intent.GET_DOCUMENT and "uuid" in entities:
+            return True, "get_document", {
+                "document_id": entities["uuid"][0].value,
+                "token": token_placeholder,
+            }
 
-        if intent == "get_workflow_status" and entities.document_ids:
-            return (
-                True,
-                "get_workflow_status",
-                {
-                    "document_id": entities.document_ids[0],
-                    "include_completed": False,
-                },
-            )
+        if intent == Intent.GET_HISTORY and "uuid" in entities:
+            return True, "get_document_history", {
+                "document_id": entities["uuid"][0].value,
+                "token": token_placeholder,
+            }
 
-        if intent == "search_documents":
-            has_filters = any(
-                [
-                    entities.statuses,
-                    entities.document_types,
-                    entities.date_range,
-                ]
-            )
-            if has_filters:
-                args: dict[str, Any] = {
-                    "page": entities.page_number or 1,
-                    "page_size": entities.limit or 20,
-                }
-                if entities.statuses:
-                    args["status"] = entities.statuses
-                if entities.document_types:
-                    args["document_type"] = entities.document_types
-                if entities.date_range:
-                    args["date_from"] = entities.date_range[0].isoformat()
-                    args["date_to"] = entities.date_range[1].isoformat()
-                return True, "search_documents", args
+        if intent == Intent.GET_ATTACHMENTS and "uuid" in entities:
+            return True, "get_document_attachments", {
+                "document_id": entities["uuid"][0].value,
+                "token": token_placeholder,
+            }
 
-        return False, None, None
+        if intent == Intent.GET_VERSIONS and "uuid" in entities:
+            return True, "get_document_versions", {
+                "document_id": entities["uuid"][0].value,
+                "token": token_placeholder,
+            }
 
+        if intent == Intent.REMOVE_CONTROL and "uuid" in entities:
+            return True, "remove_document_control", {
+                "document_id": entities["uuid"][0].value,
+                "token": token_placeholder,
+            }
 
-# ── Синглтон ──────────────────────────────────────────────────────────────
+        if intent == Intent.GET_STATS:
+            return True, "get_user_document_stats", {
+                "token": token_placeholder,
+            }
 
-_preprocessor: NLPPreprocessor | None = None
+        if intent == Intent.GET_USER_INFO:
+            return True, "get_current_user", {
+                "token": token_placeholder,
+            }
 
-
-def get_preprocessor() -> NLPPreprocessor:
-    """Возвращает синглтон NLPPreprocessor."""
-    global _preprocessor
-    if _preprocessor is None:
-        _preprocessor = NLPPreprocessor()
-    return _preprocessor
+        return False, None, {}

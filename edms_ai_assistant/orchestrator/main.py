@@ -1,28 +1,14 @@
-# edms_ai_assistant/orchestrator/main.py
-"""
-EDMS AI Assistant — главный FastAPI сервис оркестратора.
-
-Endpoints:
-    POST /chat                   — диалог с ИИ-ассистентом
-    POST /actions/summarize      — суммаризация вложения (кнопка «звезда» в EDMS)
-    GET  /chat/history/{id}      — история треда
-    POST /chat/new               — создать новый тред
-    POST /upload-file            — загрузить файл для анализа
-    GET  /health                 — статус компонентов
-    GET/PATCH/DELETE /api/settings — управление настройками
-    GET/DELETE /api/cache        — управление кэшем суммаризаций
-"""
-
 from __future__ import annotations
 
 import logging
 import re
 import shutil
 import tempfile
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import aiofiles
 import uvicorn
@@ -40,13 +26,14 @@ from sqlalchemy import select
 from starlette.middleware.cors import CORSMiddleware
 
 from edms_ai_assistant.config import settings
-from edms_ai_assistant.db.database import AsyncSessionLocal, SummarizationCache
+from edms_ai_assistant.orchestrator.db.database import AsyncSessionLocal, SummarizationCache
 from edms_ai_assistant.infrastructure.redis_client import close_redis, init_redis
-from edms_ai_assistant.mcp_server.clients.document_client import DocumentClient
-from edms_ai_assistant.mcp_server.clients.employee_client import EmployeeClient
-from edms_ai_assistant.orchestrator.agent import EdmsDocumentAgent
+from edms_ai_assistant.orchestrator.clients.document_client import DocumentClient
+from edms_ai_assistant.orchestrator.clients.employee_client import EmployeeClient
+from edms_ai_assistant.orchestrator.agent_orchestrator import EdmsAgentOrchestrator, OrchestratorConfig
 from edms_ai_assistant.orchestrator.api.routes.cache import router as cache_router
 from edms_ai_assistant.orchestrator.api.routes.settings import router as settings_router
+from fastapi.responses import PlainTextResponse
 from edms_ai_assistant.orchestrator.model import (
     AssistantResponse,
     FileUploadResponse,
@@ -56,6 +43,10 @@ from edms_ai_assistant.orchestrator.model import (
 from edms_ai_assistant.orchestrator.security import extract_user_id_from_token
 from edms_ai_assistant.shared.utils.utils import UUID_RE, get_file_hash
 
+from rag_module import RAGModule
+from memory import MemoryManager
+from mcp_client import get_mcp_client
+
 logging.basicConfig(
     level=settings.LOGGING_LEVEL,
     format=settings.LOGGING_FORMAT,
@@ -64,15 +55,24 @@ logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "edms_ai_assistant_uploads"
 
-_agent: EdmsDocumentAgent | None = None
+_metrics: dict[str, Any] = {
+    "requests_total": 0,
+    "requests_success": 0,
+    "requests_error": 0,
+    "latency_sum_ms": 0,
+    "tool_calls_total": 0,
+    "tool_calls_error": 0,
+    "feedback_positive": 0,
+    "feedback_negative": 0,
+    "start_time": time.time(),
+}
+
+_agent: EdmsAgentOrchestrator | None = None
+_rag: RAGModule | None = None
+_memory: MemoryManager | None = None
 
 
-def get_agent() -> EdmsDocumentAgent:
-    """FastAPI dependency: возвращает инициализированный агент.
-
-    Raises:
-        HTTPException 503: Если агент не инициализирован.
-    """
+def get_agent() -> EdmsAgentOrchestrator:
     if _agent is None:
         raise HTTPException(
             status_code=503,
@@ -83,37 +83,50 @@ def get_agent() -> EdmsDocumentAgent:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Управляет жизненным циклом приложения: инициализация и shutdown."""
-    global _agent
+    global _agent, _rag, _memory
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
     logger.info("Инициализация Redis...")
     await init_redis()
 
+    logger.info("Инициализация Memory и RAG модулей...")
+    try:
+        _memory = MemoryManager(
+            redis_url=getattr(settings, 'REDIS_URL', "redis://localhost"),
+            postgres_dsn=getattr(settings, 'POSTGRES_DSN', ""),
+            max_context_tokens=getattr(settings, 'MAX_CONTEXT_TOKENS', 4000),
+        )
+        await _memory.initialize()
+
+        _rag = RAGModule(
+            postgres_dsn=getattr(settings, 'POSTGRES_DSN', ""),
+            embedding_url=getattr(settings, 'LLM_EMBEDDING_URL', ""),
+            embedding_model=getattr(settings, 'LLM_EMBEDDING_MODEL', ""),
+        )
+        await _rag.initialize()
+    except Exception as e:
+        logger.warning(f"Не удалось инициализировать RAG/Memory: {e}")
+
     logger.info("Инициализация агента...")
     try:
-        _agent = EdmsDocumentAgent()
+        _agent = EdmsAgentOrchestrator()
         await _agent.initialize()
-        logger.info(
-            "EDMS AI Assistant запущен",
-            extra={"health": _agent.health_check()},
-        )
+        logger.info("EDMS AI Assistant запущен", extra={"health": _agent.health_check()})
     except Exception:
-        logger.critical(
-            "Инициализация агента провалилась — все запросы /chat вернут 503",
-            exc_info=True,
-        )
+        logger.critical("Инициализация агента провалилась", exc_info=True)
 
     yield
 
-    # Graceful shutdown
     if _agent:
         await _agent.close()
+    if _rag:
+        await _rag.close()
+    if _memory:
+        await _memory.close()
     await close_redis()
     if UPLOAD_DIR.exists():
         shutil.rmtree(UPLOAD_DIR, ignore_errors=True)
-        logger.info("Временная директория загрузок удалена")
 
 
 app = FastAPI(
@@ -136,37 +149,23 @@ app.include_router(cache_router)
 
 
 def _is_system_attachment(file_path: str | None) -> bool:
-    """True если file_path — UUID вложения EDMS (не локальный файл)."""
     return bool(file_path and UUID_RE.match(str(file_path)))
 
 
 def _cleanup_file(file_path: str) -> None:
-    """Удаляет временный файл. Вызывается как BackgroundTask."""
     try:
         p = Path(file_path)
         if p.exists():
             p.unlink()
             logger.debug("Временный файл удалён", extra={"path": file_path})
     except Exception as exc:
-        logger.warning(
-            "Не удалось удалить временный файл",
-            extra={"path": file_path, "error": str(exc)},
-        )
+        logger.warning("Не удалось удалить временный файл", extra={"path": file_path, "error": str(exc)})
 
 
 async def _resolve_user_context(
-    user_input: UserInput,
-    user_id: str,
+        user_input: UserInput,
+        user_id: str,
 ) -> dict:
-    """Получает контекст пользователя из запроса или EDMS API.
-
-    Args:
-        user_input: Входной запрос от клиента.
-        user_id: UUID пользователя, извлечённый из JWT.
-
-    Returns:
-        Dict с профилем пользователя (firstName, lastName, role и т.д.).
-    """
     if user_input.context:
         return user_input.context.model_dump(exclude_none=True)
 
@@ -176,15 +175,31 @@ async def _resolve_user_context(
             if ctx:
                 return ctx
     except Exception as exc:
-        logger.warning(
-            "Не удалось получить контекст сотрудника",
-            extra={"user_id": user_id, "error": str(exc)},
-        )
+        logger.warning("Не удалось получить контекст сотрудника", extra={"user_id": user_id, "error": str(exc)})
 
     return {"firstName": "Коллега"}
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────
+async def _update_rag_from_feedback(dialog_id: str) -> None:
+    if not _memory or not _rag:
+        return
+    try:
+        dialogs = await _memory.long.get_positive_dialogs(limit=1)
+        if dialogs:
+            await _rag.rebuild_from_logs(dialogs)
+    except Exception as exc:
+        logger.error("RAG update from feedback failed: %s", exc)
+
+
+async def _run_rag_rebuild() -> None:
+    if not _memory or not _rag:
+        return
+    try:
+        logs = await _memory.long.get_positive_dialogs(limit=500)
+        added = await _rag.rebuild_from_logs(logs)
+        logger.info("RAG rebuild complete: %d entries", added)
+    except Exception as exc:
+        logger.error("RAG rebuild failed: %s", exc)
 
 
 @app.post(
@@ -194,116 +209,129 @@ async def _resolve_user_context(
     tags=["Chat"],
 )
 async def chat_endpoint(
-    user_input: UserInput,
-    background_tasks: BackgroundTasks,
-    agent: Annotated[EdmsDocumentAgent, Depends(get_agent)],
+        user_input: UserInput,
+        background_tasks: BackgroundTasks,
+        agent: Annotated[EdmsAgentOrchestrator, Depends(get_agent)],
 ) -> AssistantResponse:
+    _metrics["requests_total"] += 1
+    start = time.time()
+
     user_id = extract_user_id_from_token(user_input.user_token)
     thread_id = (
-        user_input.thread_id
-        or f"user_{user_id}_doc_{user_input.context_ui_id or 'general'}"
+            user_input.thread_id
+            or f"user_{user_id}_doc_{user_input.context_ui_id or 'general'}"
     )
 
     user_context = await _resolve_user_context(user_input, user_id)
 
     if (
-        user_input.preferred_summary_format
-        and user_input.preferred_summary_format != "ask"
+            user_input.preferred_summary_format
+            and user_input.preferred_summary_format != "ask"
     ):
         user_context["preferred_summary_format"] = user_input.preferred_summary_format
 
-    result = await agent.chat(
-        message=user_input.message,
-        user_token=user_input.user_token,
-        context_ui_id=user_input.context_ui_id,
-        thread_id=thread_id,
-        user_context=user_context,
-        file_path=user_input.file_path,
-        file_name=user_input.file_name,
-        human_choice=user_input.human_choice,
-    )
-
-    _FILE_OPERATION_KEYWORDS = (
-        "сравни",
-        "сравнение",
-        "сравн",
-        "compare",
-        "отличи",
-        "анализ",
-        "проанализируй",
-        "суммаризир",
-        "прочит",
-        "содержим",
-        "прочти",
-        "что в файл",
-        "читай",
-        "изучи",
-    )
-    _is_file_operation = any(
-        kw in (user_input.message or "").lower() for kw in _FILE_OPERATION_KEYWORDS
-    )
-    _is_continuation = bool(user_input.human_choice)
-
-    if user_input.file_path and not _is_system_attachment(user_input.file_path):
-        _is_disambiguation = result.get("action_type") in (
-            "requires_disambiguation",
-            "summarize_selection",
+    try:
+        result = await agent.chat(
+            message=user_input.message,
+            user_token=user_input.user_token,
+            context_ui_id=user_input.context_ui_id,
+            thread_id=thread_id,
+            user_context=user_context,
+            file_path=user_input.file_path,
+            file_name=user_input.file_name,
+            human_choice=user_input.human_choice,
         )
-        _should_cleanup = (
-            result.get("status") not in ("requires_action",)
-            and not _is_file_operation
-            and not _is_continuation
-            and not _is_disambiguation
-            and result.get("requires_reload", False)
+
+        latency = int((time.time() - start) * 1000)
+        _metrics["requests_success"] += 1
+        _metrics["latency_sum_ms"] += latency
+        _metrics["tool_calls_total"] += len(result.get("tool_calls_made", []))
+
+        _FILE_OPERATION_KEYWORDS = (
+            "сравни", "сравнение", "сравн", "compare", "отличи", "анализ",
+            "проанализируй", "суммаризир", "прочит", "содержим", "прочти",
+            "что в файл", "читай", "изучи",
         )
-        if _should_cleanup:
-            background_tasks.add_task(_cleanup_file, user_input.file_path)
-            logger.debug(
-                "Запланирована очистка файла",
-                extra={"file_path": user_input.file_path},
+        _is_file_operation = any(
+            kw in (user_input.message or "").lower() for kw in _FILE_OPERATION_KEYWORDS
+        )
+        _is_continuation = bool(user_input.human_choice)
+
+        if user_input.file_path and not _is_system_attachment(user_input.file_path):
+            _is_disambiguation = result.get("action_type") in (
+                "requires_disambiguation", "summarize_selection",
             )
+            _should_cleanup = (
+                    result.get("status") not in ("requires_action",)
+                    and not _is_file_operation
+                    and not _is_continuation
+                    and not _is_disambiguation
+                    and result.get("requires_reload", False)
+            )
+            if _should_cleanup:
+                background_tasks.add_task(_cleanup_file, user_input.file_path)
 
-    final_response_text = result.get("content") or result.get("message")
+        final_response_text = result.get("content") or result.get("message")
 
-    return AssistantResponse(
-        status=result.get("status") or "success",
-        response=final_response_text,
-        action_type=result.get("action_type"),
-        message=result.get("message"),
-        thread_id=thread_id,
-        requires_reload=result.get("requires_reload", False),
-        navigate_url=result.get("navigate_url"),
-        metadata=result.get("metadata", {}),
-    )
+        return AssistantResponse(
+            status=result.get("status") or "success",
+            response=final_response_text,
+            action_type=result.get("action_type"),
+            message=result.get("message"),
+            thread_id=thread_id,
+            requires_reload=result.get("requires_reload", False),
+            navigate_url=result.get("navigate_url"),
+            metadata=result.get("metadata", {}),
+        )
+    except Exception as exc:
+        latency = int((time.time() - start) * 1000)
+        _metrics["requests_error"] += 1
+        logger.error("Chat error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post(
+    "/feedback",
+    tags=["Feedback"],
+)
+async def submit_feedback(
+        dialog_id: str,
+        rating: int,
+        comment: str = "",
+        background_tasks: BackgroundTasks | None = None,
+) -> dict:
+    if rating == 1:
+        _metrics["feedback_positive"] += 1
+    elif rating == -1:
+        _metrics["feedback_negative"] += 1
+
+    ok = False
+    if _memory:
+        ok = await _memory.update_feedback(dialog_id, rating, comment)
+
+    if ok and rating == 1 and background_tasks:
+        background_tasks.add_task(_update_rag_from_feedback, dialog_id)
+
+    label = {1: "положительная", 0: "нейтральная", -1: "отрицательная"}.get(rating, "")
+    return {"success": ok, "message": f"Оценка '{label}' сохранена" if ok else "Не удалось сохранить оценку"}
 
 
 @app.post(
     "/actions/summarize",
     response_model=AssistantResponse,
-    summary="Суммаризация вложения (кнопка «звезда» в EDMS)",
+    summary="Суммаризация вложения",
     tags=["Actions"],
 )
 async def api_direct_summarize(
-    user_input: UserInput,
-    background_tasks: BackgroundTasks,
-    agent: Annotated[EdmsDocumentAgent, Depends(get_agent)],
+        user_input: UserInput,
+        background_tasks: BackgroundTasks,
+        agent: Annotated[EdmsAgentOrchestrator, Depends(get_agent)],
 ) -> AssistantResponse:
-    """Суммаризация вложения с кэшированием в PostgreSQL.
+    _metrics["requests_total"] += 1
+    start = time.time()
 
-    Алгоритм:
-    1. Определяем file_identifier (UUID вложения или SHA-256 хэша файла)
-    2. Проверяем кэш в БД
-    3. При промахе — вызываем агент и сохраняем результат в кэш
-    """
     current_path = (user_input.file_path or "").strip()
     is_uuid = _is_system_attachment(current_path)
-
-    logger.info(
-        "Summarize: path='%s' is_uuid=%s context=%s",
-        current_path,
-        is_uuid,
-        user_input.context_ui_id,
-    )
 
     try:
         user_id = extract_user_id_from_token(user_input.user_token)
@@ -311,13 +339,11 @@ async def api_direct_summarize(
         summary_type = user_input.human_choice or "extractive"
         file_identifier: str | None = None
 
-        # Определяем идентификатор файла для кэша
         if is_uuid:
             file_identifier = current_path
         elif current_path and Path(current_path).exists():
             file_identifier = get_file_hash(current_path)
         elif user_input.context_ui_id:
-            # Резолвим UUID первого вложения документа
             try:
                 async with DocumentClient() as doc_client:
                     doc_dto = await doc_client.get_document_metadata(
@@ -331,45 +357,23 @@ async def api_direct_summarize(
                         attachments = doc_dto.get("attachmentDocument") or []
 
                     if attachments:
-
                         def _normalize(s: str) -> str:
-                            return (
-                                re.sub(r"[^a-zA-Zа-яА-Я0-9]", "", s.lower())
-                                if s
-                                else ""
-                            )
+                            return (re.sub(r"[^a-zA-Zа-яА-Я0-9]", "", s.lower()) if s else "")
 
                         clean_input = _normalize(current_path)
                         if clean_input:
                             for att in attachments:
-                                att_name = (
-                                    att.get("name", "")
-                                    if isinstance(att, dict)
-                                    else getattr(att, "name", "")
-                                ) or ""
-                                att_id = str(
-                                    att.get("id", "")
-                                    if isinstance(att, dict)
-                                    else getattr(att, "id", "")
-                                )
+                                att_name = (att.get("name", "") if isinstance(att, dict) else getattr(att, "name",
+                                                                                                      "")) or ""
+                                att_id = str(att.get("id", "") if isinstance(att, dict) else getattr(att, "id", ""))
                                 if clean_input in _normalize(att_name):
                                     file_identifier = att_id
-                                    logger.info(
-                                        "Кэш: совпадение по имени '%s'", att_name
-                                    )
                                     break
 
                         if not file_identifier and attachments:
                             first = attachments[0]
                             file_identifier = str(
-                                first.get("id", "")
-                                if isinstance(first, dict)
-                                else getattr(first, "id", "")
-                            )
-                            logger.info(
-                                "Кэш: использован первый аттач как fallback: %s",
-                                file_identifier,
-                            )
+                                first.get("id", "") if isinstance(first, dict) else getattr(first, "id", ""))
 
                         if file_identifier:
                             current_path = file_identifier
@@ -377,9 +381,6 @@ async def api_direct_summarize(
             except Exception as exc:
                 logger.error("Ошибка резолва вложений EDMS: %s", exc)
 
-        logger.info("Итоговый идентификатор файла: %s", file_identifier)
-
-        # Проверяем кэш
         if file_identifier:
             try:
                 async with AsyncSessionLocal() as db:
@@ -391,7 +392,6 @@ async def api_direct_summarize(
                     cached_row = result_row.scalar_one_or_none()
 
                     if cached_row:
-                        logger.info("CACHE HIT: %s / %s", file_identifier, summary_type)
                         return AssistantResponse(
                             status="success",
                             response=cached_row.content,
@@ -406,10 +406,9 @@ async def api_direct_summarize(
             except Exception as db_err:
                 logger.error("Ошибка чтения кэша: %s", db_err)
 
-        # Кэш-промах — вызываем агент
         _type_labels = {
             "extractive": "ключевые факты, даты, суммы",
-            "abstractive": "краткое изложение своими словами",
+            "abstractive": "краткое из ложение своими словами",
             "thesis": "структурированный тезисный план",
         }
         type_label = _type_labels.get(summary_type, summary_type)
@@ -417,10 +416,6 @@ async def api_direct_summarize(
 
         instructions = f"Работай с вложением {current_path}. " if is_uuid else ""
         agent_msg = f"{instructions}Проанализируй этот файл и выдели {type_label}."
-
-        logger.info(
-            "Агент: запрос суммаризации '%s' для %s", summary_type, current_path
-        )
 
         agent_result = await agent.chat(
             message=agent_msg,
@@ -434,7 +429,11 @@ async def api_direct_summarize(
 
         response_text = agent_result.get("content") or agent_result.get("response")
 
-        # Сохраняем в кэш при успехе
+        latency = int((time.time() - start) * 1000)
+        _metrics["requests_success"] += 1
+        _metrics["latency_sum_ms"] += latency
+        _metrics["tool_calls_total"] += len(agent_result.get("tool_calls_made", []))
+
         if file_identifier and response_text and response_text.strip():
             if agent_result.get("status") == "success":
                 try:
@@ -447,7 +446,6 @@ async def api_direct_summarize(
                                 content=response_text,
                             )
                             db.add(new_cache)
-                    logger.info("CACHE SAVE: %s / %s", file_identifier, summary_type)
                 except Exception as db_exc:
                     logger.error("Ошибка записи кэша: %s", db_exc)
 
@@ -470,6 +468,7 @@ async def api_direct_summarize(
         )
 
     except Exception as exc:
+        _metrics["requests_error"] += 1
         logger.error("Ошибка /actions/summarize: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -480,10 +479,9 @@ async def api_direct_summarize(
     tags=["Chat"],
 )
 async def get_history(
-    thread_id: str,
-    agent: Annotated[EdmsDocumentAgent, Depends(get_agent)],
+        thread_id: str,
+        agent: Annotated[EdmsAgentOrchestrator, Depends(get_agent)],
 ) -> dict:
-    """Возвращает отфильтрованную историю диалога для фронтенда."""
     try:
         state = await agent.state_manager.get_state(thread_id)
         messages = state.values.get("messages", []) if state else []
@@ -504,10 +502,7 @@ async def get_history(
         return {"messages": filtered}
 
     except Exception as exc:
-        logger.error(
-            "Ошибка получения истории треда",
-            extra={"thread_id": thread_id, "error": str(exc)},
-        )
+        logger.error("Ошибка получения истории треда", extra={"thread_id": thread_id, "error": str(exc)})
         return {"messages": []}
 
 
@@ -532,8 +527,8 @@ async def create_new_thread(request: NewChatRequest) -> dict:
     tags=["Files"],
 )
 async def upload_file(
-    user_token: Annotated[str, Form(...)],
-    file: Annotated[UploadFile, File(...)],
+        user_token: Annotated[str, Form(...)],
+        file: Annotated[UploadFile, File(...)],
 ) -> FileUploadResponse:
     try:
         extract_user_id_from_token(user_token)
@@ -560,10 +555,7 @@ async def upload_file(
             while chunk := await file.read(1024 * 1024):
                 await out_file.write(chunk)
 
-        logger.info(
-            "Файл загружен",
-            extra={"orig_filename": file.filename, "dest": str(dest_path)},
-        )
+        logger.info("Файл загружен", extra={"orig_filename": file.filename, "dest": str(dest_path)})
         return FileUploadResponse(
             file_path=str(dest_path),
             file_name=file.filename,
@@ -573,9 +565,22 @@ async def upload_file(
         raise
     except Exception as exc:
         logger.error("Ошибка загрузки файла", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail="Ошибка при сохранении файла"
-        ) from exc
+        raise HTTPException(status_code=500, detail="Ошибка при сохранении файла") from exc
+
+
+@app.get("/rag/stats", tags=["RAG"])
+async def rag_stats() -> dict:
+    if not _rag:
+        raise HTTPException(status_code=503, detail="RAG не инициализирован")
+    return await _rag.get_stats()
+
+
+@app.post("/rag/rebuild", tags=["RAG"])
+async def rag_rebuild(background_tasks: BackgroundTasks) -> dict:
+    if not _memory or not _rag:
+        raise HTTPException(status_code=503, detail="Компоненты не инициализированы")
+    background_tasks.add_task(_run_rag_rebuild)
+    return {"status": "started", "message": "Перестройка RAG запущена в фоне"}
 
 
 @app.get(
@@ -584,13 +589,45 @@ async def upload_file(
     tags=["System"],
 )
 async def health_check(
-    agent: Annotated[EdmsDocumentAgent, Depends(get_agent)],
+        agent: Annotated[EdmsAgentOrchestrator, Depends(get_agent)],
 ) -> dict:
     return {
         "status": "ok",
         "version": app.version,
         "components": agent.health_check(),
+        "rag": _rag is not None,
+        "memory": _memory is not None,
     }
+
+
+@app.get("/metrics", response_class=PlainTextResponse, tags=["System"])
+async def metrics() -> str:
+    uptime = int(time.time() - _metrics["start_time"])
+    avg_latency = (
+            _metrics["latency_sum_ms"] / max(_metrics["requests_success"], 1)
+    )
+    lines = [
+        "# HELP edms_requests_total Всего запросов",
+        "# TYPE edms_requests_total counter",
+        f'edms_requests_total {_metrics["requests_total"]}',
+        f'edms_requests_success_total {_metrics["requests_success"]}',
+        f'edms_requests_error_total {_metrics["requests_error"]}',
+        "# HELP edms_latency_avg_ms Среднее время ответа (мс)",
+        "# TYPE edms_latency_avg_ms gauge",
+        f"edms_latency_avg_ms {avg_latency:.1f}",
+        "# HELP edms_tool_calls_total Вызовы MCP-инструментов",
+        "# TYPE edms_tool_calls_total counter",
+        f'edms_tool_calls_total {_metrics["tool_calls_total"]}',
+        f'edms_tool_calls_error_total {_metrics["tool_calls_error"]}',
+        "# HELP edms_feedback Оценки пользователей",
+        "# TYPE edms_feedback counter",
+        f'edms_feedback_positive_total {_metrics["feedback_positive"]}',
+        f'edms_feedback_negative_total {_metrics["feedback_negative"]}',
+        "# HELP edms_uptime_seconds Время работы сервиса",
+        "# TYPE edms_uptime_seconds gauge",
+        f"edms_uptime_seconds {uptime}",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 if __name__ == "__main__":
