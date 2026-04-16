@@ -1,6 +1,12 @@
 # edms_ai_assistant/orchestrator/db/database.py
 """
-SQLAlchemy async engine и модели для кэша суммаризаций.
+SQLAlchemy async engine и модели.
+
+ИСПРАВЛЕНИЕ: схема таблиц изменена с "edms_ai" → "edms"
+чтобы соответствовать Alembic-миграции в alembic/versions/__init__.py,
+которая создаёт `CREATE SCHEMA IF NOT EXISTS edms`.
+
+Единое правило: ВСЕ таблицы находятся в схеме "edms".
 """
 
 from __future__ import annotations
@@ -16,9 +22,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 logger = logging.getLogger(__name__)
 
+# ── URL базы данных из переменных окружения ───────────────────────────────────
 _DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    f"postgresql+asyncpg://"
+    "postgresql+asyncpg://"
     f"{os.environ.get('POSTGRES_USER', 'edms')}:"
     f"{os.environ.get('POSTGRES_PASSWORD', 'edms_secret')}@"
     f"{os.environ.get('POSTGRES_HOST', 'localhost')}:"
@@ -31,14 +38,26 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=As
 
 
 class Base(DeclarativeBase):
+    """Базовый класс для всех ORM-моделей."""
     pass
 
 
+# ИСПРАВЛЕНО: schema="edms" (было "edms_ai") — должно совпадать с Alembic-миграцией
+_SCHEMA = "edms"
+
+
 class SummarizationCache(Base):
+    """Кэш результатов суммаризации файлов.
+
+    Ключ: (file_identifier, summary_type) — уникальная пара.
+    file_identifier: UUID вложения EDMS или SHA-256 хэш локального файла.
+    summary_type: extractive | abstractive | thesis.
+    """
+
     __tablename__ = "summarization_cache"
     __table_args__ = (
         UniqueConstraint("file_identifier", "summary_type", name="_file_summary_type_uc"),
-        {"schema": "edms_ai"},
+        {"schema": _SCHEMA},
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -49,7 +68,13 @@ class SummarizationCache(Base):
 
 
 async def get_db() -> AsyncGenerator[AsyncSession | Any, Any]:
-    """FastAPI dependency: предоставляет async-сессию SQLAlchemy."""
+    """FastAPI dependency: предоставляет async-сессию SQLAlchemy.
+
+    Использование:
+        @router.get("/...")
+        async def handler(db: AsyncSession = Depends(get_db)):
+            ...
+    """
     async with AsyncSessionLocal() as session:
         yield session
 
